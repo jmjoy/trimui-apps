@@ -1,0 +1,10 @@
+/target/
+/artifacts/
+/crates/chinese-chess/target/
+/crates/chinese-chess/artifacts/
+/crates/gomoku/target/
+/crates/gomoku/artifacts/
+*.log
+*.core
+/crates/voxel-world/target/
+/crates/voxel-world/artifacts/

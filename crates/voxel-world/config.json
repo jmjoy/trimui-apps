@@ -1,0 +1,7 @@
+{
+  "label": "Voxel World",
+  "label.ch.lang": "方块世界",
+  "icon": "icon.png",
+  "launch": "launch.sh",
+  "description": "Creative 3D voxel sandbox. Dual sticks, R2 break, L2 place, X fly, START menu."
+}

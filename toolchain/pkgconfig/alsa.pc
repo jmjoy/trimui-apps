@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+libdir=${prefix}/device-libs
+includedir=/usr/include
+
+Name: alsa
+Description: TRIMUI device ALSA library for capability probe
+Version: 1.1.8
+Libs: -L${libdir} -lasound
+Cflags:

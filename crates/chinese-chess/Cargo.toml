@@ -1,0 +1,20 @@
+[package]
+name = "trimui-chinese-chess"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+ash = { workspace = true }
+clap = { workspace = true }
+cpal = { workspace = true }
+ctrlc = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+env_logger = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+png = { workspace = true }
+pollster = { workspace = true }
+wgpu = { workspace = true }
+wgpu-hal = { workspace = true }

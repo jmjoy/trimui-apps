@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Keep side padding and a transparent bottom band for the MainUI label. -->
+  <g transform="translate(32 8) scale(0.75)">
+    <rect x="8" y="8" width="240" height="240" rx="46" fill="#182528"/>
+    <rect x="29" y="29" width="198" height="198" rx="19" fill="#d5ad70"/>
+    <path d="M50 50H206M50 89H206M50 128H206M50 167H206M50 206H206M50 50V206M89 50V206M128 50V206M167 50V206M206 50V206" stroke="#79522d" stroke-width="2"/>
+    <circle cx="91" cy="95" r="30" fill="#79522d" opacity=".4"/>
+    <circle cx="89" cy="89" r="29" fill="#202828" stroke="#111818" stroke-width="2"/>
+    <ellipse cx="80" cy="78" rx="12" ry="7" fill="#596363" opacity=".7"/>
+    <circle cx="169" cy="173" r="30" fill="#79522d" opacity=".4"/>
+    <circle cx="167" cy="167" r="29" fill="#f4f2e7" stroke="#cacabd" stroke-width="2"/>
+    <ellipse cx="158" cy="156" rx="12" ry="7" fill="#fff"/>
+    <circle cx="128" cy="128" r="4" fill="#79522d"/>
+  </g>
+</svg>

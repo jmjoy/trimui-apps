@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+<!-- Match the other apps: side padding and a transparent bottom band for the MainUI label. -->
+<g transform="translate(38 14) scale(0.703125)">
+<defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#5f9aa3"/><stop offset="1" stop-color="#b2d4b6"/></linearGradient></defs>
+<rect width="256" height="256" rx="40" fill="url(#sky)"/>
+<circle cx="194" cy="58" r="20" fill="#f4dc94"/>
+<path d="M0 180 50 125 91 159 136 99 197 155 256 126V256H0" fill="#5d8761"/>
+<path d="m40 105 88-48 88 48-88 49Z" fill="#8ab851"/>
+<path d="m40 105 88 49v94l-88-49Z" fill="#89603b"/>
+<path d="m128 154 88-49v94l-88 49Z" fill="#b5834b"/>
+<path d="m40 105 88 49v24l-88-49Z" fill="#5c923c"/>
+<path d="m128 154 88-49v24l-88 49Z" fill="#79a949"/>
+<path d="m58 150 17 9v17l-17-9zm34 37 16 8v17l-16-8z" fill="#704c32"/>
+<path d="m146 183 17-9v17l-17 9zm35-8 17-9v17l-17 9z" fill="#c4975d"/>
+<path d="m82 106 20-11 18 10-20 11zm52-20 20-11 18 10-20 11zm14 38 17-9 16 9-17 9z" fill="#a1c764"/>
+</g>
+</svg>

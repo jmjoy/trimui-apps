@@ -1,0 +1,7 @@
+{
+  "label": "Gomoku",
+  "label.ch.lang": "五子棋",
+  "icon": "icon.png",
+  "launch": "launch.sh",
+  "description": "Wooden Gomoku vs AI. A: place, X: undo, Y: hint, START: menu, SELECT + START: exit."
+}

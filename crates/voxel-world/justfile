@@ -1,0 +1,109 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+project_dir := source_directory()
+workspace_dir := project_dir / "../.."
+artifact_root := workspace_dir / "artifacts"
+artifact_dir := artifact_root / "voxel-world"
+toolchain_dir := workspace_dir / "toolchain"
+binary_name := "trimui-voxel-world"
+device_dir := "/mnt/SDCARD/Ports/VoxelWorld"
+marker_name := ".trimui-voxel-world"
+
+default: package
+
+fmt:
+    cargo fmt --manifest-path "{{ workspace_dir }}/Cargo.toml" --all -- --check
+
+test:
+    cargo test --manifest-path "{{ workspace_dir }}/Cargo.toml" --locked -p {{ binary_name }}
+
+clippy:
+    cargo clippy --manifest-path "{{ workspace_dir }}/Cargo.toml" --locked -p {{ binary_name }} --all-targets -- -D warnings
+
+check: fmt test clippy
+
+build profile="release":
+    #!/usr/bin/env bash
+    case "{{ profile }}" in
+        release) cargo_args=(--release) ;;
+        debug) cargo_args=() ;;
+        *) printf 'profile must be release or debug\n' >&2; exit 2 ;;
+    esac
+    PKG_CONFIG_ALLOW_CROSS=1 PKG_CONFIG_LIBDIR="{{ toolchain_dir }}/pkgconfig" \
+        cargo zigbuild --locked --manifest-path "{{ workspace_dir }}/Cargo.toml" \
+        --target-dir "{{ workspace_dir }}/target" --target aarch64-unknown-linux-gnu.2.33 \
+        -p {{ binary_name }} "${cargo_args[@]}"
+
+stage profile="release": (build profile)
+    #!/usr/bin/env bash
+    case "{{ profile }}" in release) output_profile=release ;; debug) output_profile=debug ;; *) exit 2 ;; esac
+    task_stage="{{ artifact_root }}/Ports/VoxelWorld"
+    mkdir -p "{{ artifact_dir }}"
+    rm -rf "$task_stage"
+    mkdir -p "$task_stage"
+    cp "{{ workspace_dir }}/target/aarch64-unknown-linux-gnu/$output_profile/{{ binary_name }}" "$task_stage/"
+    cp "{{ project_dir }}/config.json" "{{ project_dir }}/icon.png" "$task_stage/"
+    cp "{{ project_dir }}/scripts/launch.sh" "{{ project_dir }}/scripts/test.sh" "$task_stage/"
+    touch "$task_stage/{{ marker_name }}"
+    chmod 755 "$task_stage/{{ binary_name }}" "$task_stage/launch.sh" "$task_stage/test.sh"
+
+package profile="release": (stage profile)
+    tar -czf "{{ artifact_root }}/voxel-world-trimui-smart-pro.tar.gz" -C "{{ artifact_root }}" Ports/VoxelWorld
+
+run *args:
+    #!/usr/bin/env bash
+    mkdir -p "{{ artifact_dir }}"
+    task_args=( {{ args }} )
+    if [ "${task_args[0]-}" = -- ]; then task_args=("${task_args[@]:1}"); fi
+    task_save_args=(--save-dir /tmp/voxel-world-smoke)
+    task_capture=
+    task_capture_next=false
+    for task_arg in "${task_args[@]}"; do
+        if "$task_capture_next"; then task_capture="$task_arg"; task_capture_next=false; fi
+        case "$task_arg" in
+            --save-dir|--save-dir=*) task_save_args=() ;;
+            --capture) task_capture_next=true ;;
+            --capture=*) task_capture="${task_arg#--capture=}" ;;
+        esac
+    done
+    adb wait-for-device
+    set +e
+    adb shell sh "{{ device_dir }}/test.sh" "${task_save_args[@]}" "${task_args[@]}" | tee "{{ artifact_dir }}/run-adb.log"
+    set -e
+    grep -q '^Voxel World exit status: 0' "{{ artifact_dir }}/run-adb.log"
+    case " ${task_args[*]} " in *" --probe "*) ;; *) grep -q 'First frame: present completed' "{{ artifact_dir }}/run-adb.log" ;; esac
+    if [ -n "$task_capture" ]; then adb pull "$task_capture" "{{ artifact_dir }}/capture.png" >/dev/null; fi
+
+deploy profile="release": (package profile)
+    #!/usr/bin/env bash
+    adb wait-for-device
+    task_guard="$(adb shell "if test ! -e '{{ device_dir }}' || test -f '{{ device_dir }}/{{ marker_name }}'; then printf DEPLOY_OK; else printf DEPLOY_REFUSED; fi")"
+    case "$task_guard" in *DEPLOY_OK*) ;; *) printf 'Refusing to overwrite unmarked {{ device_dir }}\n' >&2; exit 1 ;; esac
+    adb shell "mkdir -p '{{ device_dir }}'; touch '{{ device_dir }}/{{ marker_name }}'"
+    for task_file in {{ binary_name }} launch.sh test.sh config.json icon.png {{ marker_name }}; do
+        adb push "{{ artifact_root }}/Ports/VoxelWorld/$task_file" "{{ device_dir }}/$task_file" >/dev/null
+    done
+    adb shell "chmod 755 '{{ device_dir }}/{{ binary_name }}' '{{ device_dir }}/launch.sh' '{{ device_dir }}/test.sh'"
+    set +e
+    adb shell sh "{{ device_dir }}/test.sh" --seconds 15 --save-dir /tmp/voxel-world-smoke --seed 42 --capture /tmp/voxel-world-setup.png | tee "{{ artifact_dir }}/deploy-test.log"
+    set -e
+    grep -q '^Voxel World exit status: 0' "{{ artifact_dir }}/deploy-test.log"
+    grep -q 'First frame: present completed' "{{ artifact_dir }}/deploy-test.log"
+    adb pull /tmp/voxel-world-setup.png "{{ artifact_dir }}/setup.png" >/dev/null
+
+input-test: (deploy "release")
+    #!/usr/bin/env bash
+    printf '%s\n' 'Input test writes event3: do not operate the physical controller during this test.'
+    node "{{ project_dir }}/scripts/input-events.cjs" "{{ artifact_dir }}/input"
+    adb push "{{ artifact_dir }}/input" /tmp/voxel-world-input >/dev/null
+    adb push "{{ project_dir }}/scripts/device-input-test.sh" /tmp/voxel-world-input-test.sh >/dev/null
+    sleep 2
+    set +e
+    adb shell sh /tmp/voxel-world-input-test.sh | tee "{{ artifact_dir }}/input-test.log"
+    set -e
+    grep -q '^Input test: PASS' "{{ artifact_dir }}/input-test.log"
+    adb pull /tmp/voxel-world-game.png "{{ artifact_dir }}/game.png" >/dev/null
+    adb pull /tmp/voxel-world-reload.log "{{ artifact_dir }}/reload.log" >/dev/null
+
+clean:
+    cargo clean --manifest-path "{{ workspace_dir }}/Cargo.toml" -p {{ binary_name }}
+    rm -rf "{{ artifact_root }}/Ports/VoxelWorld" "{{ artifact_dir }}" "{{ artifact_root }}/voxel-world-trimui-smart-pro.tar.gz"

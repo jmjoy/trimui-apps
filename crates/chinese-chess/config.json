@@ -1,0 +1,7 @@
+{
+  "label": "Chinese Chess",
+  "label.ch.lang": "中国象棋",
+  "icon": "icon.png",
+  "launch": "launch.sh",
+  "description": "Chinese Chess vs AI. A: confirm, B: cancel, START: menu, SELECT + START: exit."
+}

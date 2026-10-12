@@ -1,0 +1,320 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+project_dir := source_directory()
+workspace_dir := project_dir / "../.."
+target_dir := workspace_dir / "target"
+artifact_root := workspace_dir / "artifacts"
+artifact_dir := artifact_root / "gomoku"
+toolchain_dir := workspace_dir / "toolchain"
+binary_name := "trimui-gomoku"
+target_triple := "aarch64-unknown-linux-gnu.2.33"
+device_dir := "/mnt/SDCARD/Ports/Gomoku"
+marker_name := ".trimui-gomoku"
+
+default: package
+
+fmt:
+    cargo fmt --manifest-path "{{ workspace_dir }}/Cargo.toml" --all -- --check
+
+test:
+    cargo test --manifest-path "{{ workspace_dir }}/Cargo.toml" --locked -p trimui-gomoku
+
+clippy:
+    cargo clippy --manifest-path "{{ workspace_dir }}/Cargo.toml" --locked -p trimui-gomoku --all-targets -- -D warnings
+
+check: fmt test clippy
+
+build profile="release":
+    #!/usr/bin/env bash
+    case "{{ profile }}" in
+        release)
+            cargo_args=(--release)
+            output_profile=release
+            ;;
+        debug)
+            cargo_args=()
+            output_profile=debug
+            ;;
+        *)
+            printf 'profile must be release or debug\n' >&2
+            exit 2
+            ;;
+    esac
+    cd "{{ workspace_dir }}"
+    test -f "{{ toolchain_dir }}/pkgconfig/alsa.pc"
+    test -f "{{ toolchain_dir }}/device-libs/libasound.so.2"
+    PKG_CONFIG_ALLOW_CROSS=1 \
+    PKG_CONFIG_LIBDIR="{{ toolchain_dir }}/pkgconfig" \
+        cargo zigbuild --locked \
+            --manifest-path "{{ workspace_dir }}/Cargo.toml" \
+            --target-dir "{{ target_dir }}" \
+            --target "{{ target_triple }}" \
+            -p "{{ binary_name }}" \
+            "${cargo_args[@]}"
+    test -x "{{ target_dir }}/aarch64-unknown-linux-gnu/${output_profile}/{{ binary_name }}"
+
+stage profile="release": (build profile)
+    #!/usr/bin/env bash
+    case "{{ profile }}" in
+        release) output_profile=release ;;
+        debug) output_profile=debug ;;
+        *) printf 'profile must be release or debug\n' >&2; exit 2 ;;
+    esac
+    stage_dir="{{ artifact_root }}/Ports/Gomoku"
+    input_dir="{{ artifact_dir }}/input"
+    mkdir -p "{{ artifact_root }}/Ports" "{{ artifact_dir }}"
+    rm -rf "$stage_dir" "$input_dir"
+    mkdir -p "$stage_dir"
+    cp "{{ target_dir }}/aarch64-unknown-linux-gnu/${output_profile}/{{ binary_name }}" "$stage_dir/{{ binary_name }}"
+    cp "{{ project_dir }}/config.json" "{{ project_dir }}/icon.png" "$stage_dir/"
+    : > "$stage_dir/{{ marker_name }}"
+    cat > "$stage_dir/launch.sh" <<'EOF'
+    #!/bin/sh
+    # MainUI yields its display before launching an app.
+    cd "$(dirname "$0")" || exit 1
+    export RUST_LOG="${RUST_LOG:-warn,trimui_gomoku=info}"
+    exec ./trimui-gomoku "$@" >> gomoku.log 2>&1
+    EOF
+    cat > "$stage_dir/test.sh" <<'EOF'
+    #!/bin/sh
+    # Reversible ADB test: pause MainUI, run for a bounded time, then resume it.
+    cd "$(dirname "$0")" || exit 1
+    task_ui_pids="$(pidof MainUI)"
+    task_demo_pid=
+    cleanup() {
+        trap - EXIT HUP INT TERM
+        if [ -n "$task_demo_pid" ] && kill -0 "$task_demo_pid" 2>/dev/null; then
+            kill -TERM "$task_demo_pid" 2>/dev/null
+            wait "$task_demo_pid" 2>/dev/null
+        fi
+        for task_ui_pid in $task_ui_pids; do kill -CONT "$task_ui_pid" 2>/dev/null; done
+    }
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' HUP TERM
+    for task_ui_pid in $task_ui_pids; do kill -STOP "$task_ui_pid" || exit 1; done
+    if [ "$#" -eq 0 ]; then set -- --seconds 15; fi
+    RUST_LOG="${RUST_LOG:-warn,trimui_gomoku=info}" timeout -s TERM -k 5 30 ./trimui-gomoku "$@" &
+    task_demo_pid=$!
+    wait "$task_demo_pid"
+    task_result=$?
+    task_demo_pid=
+    printf 'Gomoku exit status: %s\n' "$task_result"
+    exit "$task_result"
+    EOF
+    chmod 755 "$stage_dir/{{ binary_name }}" "$stage_dir/launch.sh" "$stage_dir/test.sh"
+    cat > "{{ artifact_dir }}/input-events.cjs" <<'EOF'
+    // Development-only Linux evdev events for the known TRIMUI Player1 controller.
+    // This writes test files; it neither opens input devices nor contacts the handheld.
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const dir = process.argv[2];
+    if (!dir) throw new Error('Usage: node input-events.cjs OUTPUT_DIRECTORY');
+    fs.mkdirSync(dir, { recursive: true });
+    function event(type, code, value) {
+      const bytes = Buffer.alloc(24); // aarch64 struct input_event
+      bytes.writeUInt16LE(type, 16);
+      bytes.writeUInt16LE(code, 18);
+      bytes.writeInt32LE(value, 20);
+      return bytes;
+    }
+    function write(name, ...events) {
+      fs.writeFileSync(path.join(dir, name + '.bin'), Buffer.concat(events));
+    }
+    for (const [name, code] of Object.entries({ a: 305, b: 304, x: 308, y: 307, l: 310, r: 311, start: 315 })) {
+      write(name, event(1, code, 1), event(0, 0, 0), event(1, code, 0), event(0, 0, 0));
+    }
+    write('up', event(3, 17, -1), event(0, 0, 0));
+    write('down', event(3, 17, 1), event(0, 0, 0));
+    write('right', event(3, 16, 1), event(0, 0, 0));
+    write('left', event(3, 16, -1), event(0, 0, 0));
+    write('neutral', event(3, 16, 0), event(3, 17, 0), event(3, 0, 0), event(3, 1, 0), event(0, 0, 0));
+    write('exit-press', event(1, 314, 1), event(1, 315, 1), event(0, 0, 0));
+    write('exit-release', event(1, 314, 0), event(1, 315, 0), event(0, 0, 0));
+    EOF
+    cat > "{{ artifact_dir }}/device-input-test.sh" <<'EOF'
+    #!/bin/sh
+    # Writes known controller events directly to event3; do not use physical buttons during this test.
+    cd /mnt/SDCARD/Ports/Gomoku || exit 1
+    task_input_dir=/tmp/gomoku-input
+    task_log=/mnt/SDCARD/Ports/Gomoku/input-test.log
+    : > "$task_log"
+    rm -f /tmp/gomoku-game.png
+    wait_for_count() {
+        task_attempt=0
+        while [ "$(grep -c "$1" "$task_log")" -lt "$2" ]; do
+            task_attempt=$((task_attempt + 1))
+            [ "$task_attempt" -le 100 ] || return 1
+            sleep 0.1
+        done
+    }
+    wait_for_text() { wait_for_count "$1" 1; }
+    button() { cat "$task_input_dir/$1.bin" > /dev/input/event3; sleep 0.15; }
+    direction() {
+        cat "$task_input_dir/$1.bin" > /dev/input/event3
+        sleep 0.08
+        cat "$task_input_dir/neutral.bin" > /dev/input/event3
+        sleep 0.12
+    }
+    (
+        set -e
+        trap 'cat "$task_input_dir/neutral.bin" "$task_input_dir/exit-release.bin" > /dev/input/event3' EXIT
+        wait_for_text 'First frame: present completed'
+        button start
+        wait_for_text 'Game started: Black, Normal'
+        button y
+        wait_for_count 'Hint ready:' 1
+        button a
+        wait_for_text 'Move 2: White'
+        sleep 4
+        button x
+        wait_for_text 'Undo: 0 moves remain'
+        button start
+        direction down
+        direction down
+        direction down
+        direction down
+        direction down
+        direction right
+        wait_for_text 'Audio settings: muted=true'
+        direction down
+        direction right
+        direction down
+        direction right
+        direction down
+        direction right
+        direction down
+        direction right
+        wait_for_text 'effects_volume=70%, music_volume=30%'
+        direction up
+        direction up
+        direction up
+        direction up
+        direction right
+        direction down
+        direction right
+        direction down
+        direction down
+        direction right
+        wait_for_text 'muted=false, effects=true, music=true, effects_volume=70%, music_volume=30%'
+        direction down
+        direction down
+        button a
+        wait_for_text 'Returned to setup'
+        direction right
+        button start
+        wait_for_text 'Game started: White, Normal'
+        wait_for_count 'Move 1: Black' 2
+        button y
+        wait_for_count 'Hint ready:' 2
+        button a
+        wait_for_text 'Move 3: Black'
+        button x
+        wait_for_text 'Undo: 1 moves remain'
+        cat "$task_input_dir/exit-press.bin" > /dev/input/event3
+        sleep 0.2
+        cat "$task_input_dir/exit-release.bin" > /dev/input/event3
+    ) &
+    task_helper_pid=$!
+    trap 'kill "$task_helper_pid" 2>/dev/null; wait "$task_helper_pid" 2>/dev/null' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' HUP TERM
+    sh ./test.sh --seconds 25 --capture /tmp/gomoku-game.png --capture-after 4 > "$task_log" 2>&1
+    task_app_status=$?
+    wait "$task_helper_pid"
+    task_helper_status=$?
+    trap - EXIT
+    cat "$task_log"
+    if [ "$task_app_status" -eq 0 ] && [ "$task_helper_status" -eq 0 ] &&
+        grep -q '^Gomoku exit status: 0' "$task_log" &&
+        grep -q 'Exit requested by SELECT + START' "$task_log" &&
+        grep -q 'Audio: 48000 Hz, 2 channels, F32' "$task_log" &&
+        test -f /tmp/gomoku-game.png; then
+        printf '%s\n' 'Input test: PASS'
+    else
+        printf '%s\n' 'Input test: FAIL'
+        exit 1
+    fi
+    EOF
+    chmod 755 "{{ artifact_dir }}/device-input-test.sh"
+
+package profile="release": (stage profile)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tar -czf "{{ artifact_root }}/gomoku-trimui-smart-pro.tar.gz" \
+        -C "{{ artifact_root }}" Ports/Gomoku
+    printf 'Package: %s\n' "{{ artifact_root }}/gomoku-trimui-smart-pro.tar.gz"
+
+run *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    run_args=( {{ args }} )
+    if [ "${run_args[0]-}" = "--" ]; then
+        run_args=("${run_args[@]:1}")
+    fi
+    adb wait-for-device
+    adb shell rm -f /tmp/gomoku.png
+    set +e
+    adb shell sh "{{ device_dir }}/test.sh" "${run_args[@]}" | tee "{{ artifact_dir }}/run-adb.log"
+    set -e
+    grep -q '^Gomoku exit status: 0' "{{ artifact_dir }}/run-adb.log"
+    case " ${run_args[*]} " in
+        *" --probe "*) ;;
+        *) grep -q 'First frame: present completed' "{{ artifact_dir }}/run-adb.log" ;;
+    esac
+    capture_guard="$(adb shell 'if test -f /tmp/gomoku.png; then printf CAPTURE_OK; else printf CAPTURE_NONE; fi')"
+    case "$capture_guard" in
+        *CAPTURE_OK*) adb pull /tmp/gomoku.png "{{ artifact_dir }}/setup.png" >/dev/null ;;
+    esac
+
+deploy profile="release": (package profile)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    package_dir="{{ artifact_root }}/Ports/Gomoku"
+    adb wait-for-device
+    device_guard="$(adb shell "if test ! -e '{{ device_dir }}' || test -f '{{ device_dir }}/{{ marker_name }}'; then printf DEPLOY_OK; else printf DEPLOY_REFUSED; fi")"
+    case "$device_guard" in
+        *DEPLOY_OK*) ;;
+        *) printf 'Refusing to overwrite an unrecognized %s directory.\n' "{{ device_dir }}" >&2; exit 1 ;;
+    esac
+    adb shell "mkdir -p '{{ device_dir }}'; touch '{{ device_dir }}/{{ marker_name }}'"
+    for app_file in {{ binary_name }} launch.sh test.sh config.json icon.png {{ marker_name }}; do
+        adb push "$package_dir/$app_file" "{{ device_dir }}/$app_file" >/dev/null
+    done
+    adb shell "chmod 755 '{{ device_dir }}/{{ binary_name }}' '{{ device_dir }}/launch.sh' '{{ device_dir }}/test.sh'"
+    printf 'Installed: %s\n' "{{ device_dir }}"
+    set +e
+    adb shell sh "{{ device_dir }}/test.sh" --seconds 15 --capture /tmp/gomoku-deploy.png | tee "{{ artifact_dir }}/deploy-test.log"
+    set -e
+    grep -q '^Gomoku exit status: 0' "{{ artifact_dir }}/deploy-test.log"
+    grep -q 'First frame: present completed' "{{ artifact_dir }}/deploy-test.log"
+    adb pull /tmp/gomoku-deploy.png "{{ artifact_dir }}/setup.png" >/dev/null
+
+input-test: (deploy "release")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf '%s\n' 'Input test writes event3: do not operate the physical controller during the test.'
+    input_dir="{{ artifact_dir }}/input"
+    rm -rf "$input_dir"
+    node "{{ artifact_dir }}/input-events.cjs" "$input_dir"
+    adb wait-for-device
+    adb push "$input_dir" /tmp/gomoku-input >/dev/null
+    adb push "{{ artifact_dir }}/device-input-test.sh" /tmp/gomoku-input-test.sh >/dev/null
+    # Let MainUI finish reopening its audio route before pausing it again.
+    sleep 2
+    set +e
+    adb shell sh /tmp/gomoku-input-test.sh | tee "{{ artifact_dir }}/input-test.log"
+    set -e
+    grep -q '^Input test: PASS' "{{ artifact_dir }}/input-test.log"
+    adb pull /tmp/gomoku-game.png "{{ artifact_dir }}/game.png" >/dev/null
+    GOMOKU_DEVICE_SMOKE_PNG="{{ artifact_dir }}/game.png" \
+        cargo test --manifest-path "{{ workspace_dir }}/Cargo.toml" --locked \
+            -p "{{ binary_name }}" device_capture_contains_board_and_both_stones -- --ignored
+
+clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo clean --manifest-path "{{ workspace_dir }}/Cargo.toml" -p "{{ binary_name }}"
+    rm -rf "{{ artifact_root }}/Ports/Gomoku" \
+        "{{ artifact_root }}/gomoku-trimui-smart-pro.tar.gz" \
+        "{{ artifact_dir }}"
