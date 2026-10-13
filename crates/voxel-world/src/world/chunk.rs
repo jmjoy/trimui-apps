@@ -37,6 +37,12 @@ pub struct Section {
     pub blocks: [u8; CELLS],
     pub state: [u8; CELLS],
     count: u16,
+    /// Cells holding fully opaque cubes; a section full of them hides
+    /// everything behind it (unlike one full of water or glass).
+    opaque: u16,
+}
+fn is_opaque(id: u8) -> bool {
+    super::block::def(id).render == super::block::Render::Opaque
 }
 impl Section {
     fn shared() -> Arc<Self> {
@@ -44,11 +50,13 @@ impl Section {
             blocks: [0; CELLS],
             state: [0; CELLS],
             count: 0,
+            opaque: 0,
         })
     }
-    /// Number of non-air cells.
-    pub fn count(&self) -> usize {
-        usize::from(self.count)
+
+    /// Number of fully opaque cells.
+    pub fn opaque(&self) -> usize {
+        usize::from(self.opaque)
     }
 }
 
@@ -108,6 +116,11 @@ impl Column {
         match (old == 0, block == 0) {
             (true, false) => section.count += 1,
             (false, true) => section.count -= 1,
+            _ => {}
+        }
+        match (is_opaque(old), is_opaque(block)) {
+            (false, true) => section.opaque += 1,
+            (true, false) => section.opaque -= 1,
             _ => {}
         }
         section.blocks[i] = block;
@@ -211,6 +224,8 @@ impl Column {
                 "Invalid block id in column {pos}"
             );
             section_mut.count = section_mut.blocks.iter().filter(|&&b| b != 0).count() as u16;
+            section_mut.opaque =
+                section_mut.blocks.iter().filter(|&&b| is_opaque(b)).count() as u16;
             if section.count > 0 {
                 column.sections[s] = Some(section);
             }

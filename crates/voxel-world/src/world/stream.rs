@@ -32,12 +32,24 @@ struct Loaded {
 }
 
 /// Generation statistics since the last report.
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Debug)]
 pub struct StreamStats {
     pub generated: u32,
     pub read: u32,
     pub gen_ms_sum: f32,
     pub gen_ms_max: f32,
+    /// Generation times in ms (for percentiles).
+    pub samples: Vec<f32>,
+}
+impl StreamStats {
+    /// Value below which `q` (0–1) of the samples fall.
+    pub fn percentile(samples: &mut [f32], q: f32) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        samples.sort_by(f32::total_cmp);
+        samples[((samples.len() - 1) as f32 * q).round() as usize]
+    }
 }
 
 /// Reads a stored column or generates it; never fails.
@@ -124,6 +136,9 @@ impl Stream {
                 self.stats.generated += 1;
                 self.stats.gen_ms_sum += loaded.ms;
                 self.stats.gen_ms_max = self.stats.gen_ms_max.max(loaded.ms);
+                if self.stats.samples.len() < 4096 {
+                    self.stats.samples.push(loaded.ms);
+                }
             }
             if !far(pos) && !world.loaded(pos) {
                 world.insert(loaded.column);
@@ -279,5 +294,13 @@ mod tests {
         assert!(priority(IVec2::ZERO, f) < priority(IVec2::new(0, -1), f));
         assert!(priority(IVec2::new(0, -2), f) < priority(IVec2::new(0, 2), f));
         assert!(priority(IVec2::new(0, -1), f) < priority(IVec2::new(0, -3), f));
+    }
+
+    #[test]
+    fn percentiles() {
+        let mut v = vec![5.0, 1.0, 3.0, 2.0, 4.0];
+        assert_eq!(StreamStats::percentile(&mut v, 0.5), 3.0);
+        assert_eq!(StreamStats::percentile(&mut v, 1.0), 5.0);
+        assert_eq!(StreamStats::percentile(&mut [], 0.5), 0.0);
     }
 }

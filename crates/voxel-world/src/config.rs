@@ -43,12 +43,19 @@ impl Default for Config {
 pub struct Video {
     pub view_distance: i32,
     pub smooth_lighting: bool,
+    /// Leaves with see-through holes (alpha tested) near the player instead
+    /// of solid cubes. Off by default: it costs about 10 % of the frame
+    /// rate on the GE8300.
+    pub fancy_leaves: bool,
+    pub clouds: bool,
 }
 impl Default for Video {
     fn default() -> Self {
         Self {
             view_distance: 4,
             smooth_lighting: true,
+            fancy_leaves: false,
+            clouds: true,
         }
     }
 }

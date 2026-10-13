@@ -1,3 +1,5 @@
+pub mod arena;
+pub mod clouds;
 pub mod icons;
 pub mod sky;
 pub mod textures;
@@ -18,14 +20,44 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// CPU milliseconds spent in one `draw` call.
+/// Milliseconds spent on one frame.
 #[derive(Clone, Copy, Default)]
 pub struct DrawCost {
     pub upload: f32,
+    /// CPU time recording the frame (excluding upload and the GPU wait).
     pub render: f32,
+    /// Time waiting for the GPU to finish the frame.
+    pub gpu: f32,
+}
+
+/// A frame recorded ahead of time: the finished scene commands and the
+/// interface, ready to be drawn into the next swapchain image.
+struct Prepared {
+    scene: wgpu::CommandBuffer,
+    callbacks: Vec<wgpu::CommandBuffer>,
+    jobs: Vec<egui::ClippedPrimitive>,
+    screen: egui_wgpu::ScreenDescriptor,
+    free: Vec<egui::TextureId>,
+    upload: f32,
+    cpu: f32,
+}
+
+/// A submitted frame the GPU may still be working on.
+pub struct InFlight {
+    submission: wgpu::SubmissionIndex,
+    readback: Option<(
+        wgpu::Buffer,
+        std::path::PathBuf,
+        u32,
+        (u32, u32),
+        wgpu::TextureFormat,
+    )>,
+    free: Vec<egui::TextureId>,
+    cost: DrawCost,
 }
 
 pub struct Renderer {
+    prepared: Option<Prepared>,
     icons: ui::Icons,
     _icon_texture: egui::TextureHandle,
     egui: egui::Context,
@@ -57,6 +89,7 @@ impl Renderer {
             })
             .collect();
         Ok(Self {
+            prepared: None,
             icons: ui::Icons {
                 texture: icon_texture.id(),
                 uv,
@@ -68,21 +101,20 @@ impl Renderer {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn draw(
+    /// CPU work of a frame that does not need the swapchain image: mesh
+    /// uploads, scheduling and the interface. Runs while the GPU is still
+    /// busy with the previous frame.
+    pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        target: &Target,
         display: &DirectDisplay,
         app: &App,
         elapsed: f64,
         diag: &Diagnostics,
-        capture: Option<&Path>,
-    ) -> Result<DrawCost> {
+    ) {
         let start = Instant::now();
-        let width = display.extent.width;
-        let height = display.extent.height;
+        let (width, height) = (display.extent.width, display.extent.height);
         let upload = self.scene.update(device, queue, app);
         let output = self.egui.run_ui(
             egui::RawInput {
@@ -114,13 +146,43 @@ impl Renderer {
             size_in_pixels: [width, height],
             pixels_per_point: output.pixels_per_point,
         };
+        // Recording and finishing the scene commands is expensive on the
+        // CPU; doing it here overlaps it with the GPU's previous frame.
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("voxel-world frame"),
+            label: Some("voxel-world scene"),
         });
         let callbacks = self
             .painter
             .update_buffers(device, queue, &mut encoder, &jobs, &screen);
         self.scene.prepare(&mut encoder);
+        self.prepared = Some(Prepared {
+            scene: encoder.finish(),
+            callbacks,
+            jobs,
+            screen,
+            free: output.textures_delta.free.iter().copied().collect(),
+            upload,
+            cpu: start.elapsed().as_secs_f32() * 1000.0 - upload,
+        });
+    }
+
+    /// Records and submits the prepared frame into the swapchain image.
+    pub fn submit(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &Target,
+        display: &DirectDisplay,
+        capture: Option<&Path>,
+    ) -> Result<InFlight> {
+        let start = Instant::now();
+        let prepared = self.prepared.take().context("Frame was not prepared")?;
+        let width = display.extent.width;
+        let height = display.extent.height;
+        let screen = &prepared.screen;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("voxel-world frame"),
+        });
         {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("voxel-world board and controls"),
@@ -137,10 +199,10 @@ impl Renderer {
             });
             let mut pass = pass.forget_lifetime();
             self.scene.paint(&mut pass);
-            self.painter.render(&mut pass, &jobs, &screen);
+            self.painter.render(&mut pass, &prepared.jobs, screen);
         }
         let row_bytes = (width * 4).div_ceil(256) * 256;
-        let readback = if capture.is_some() {
+        let readback = if let Some(path) = capture {
             ensure!(
                 display.can_capture,
                 "Display does not support screenshot readback"
@@ -172,7 +234,13 @@ impl Renderer {
                     depth_or_array_layers: 1,
                 },
             );
-            Some(buffer)
+            Some((
+                buffer,
+                path.to_owned(),
+                row_bytes,
+                (width, height),
+                display.format,
+            ))
         } else {
             None
         };
@@ -186,32 +254,49 @@ impl Renderer {
         );
         // Preserve wgpu-demo's workaround for the PowerVR timeline wait bug.
         display.prepare_submit(queue)?;
-        let submission = queue.submit(callbacks.into_iter().chain([encoder.finish()]));
+        let submission = queue.submit(
+            prepared
+                .callbacks
+                .into_iter()
+                .chain([prepared.scene, encoder.finish()]),
+        );
+        Ok(InFlight {
+            submission,
+            readback,
+            free: prepared.free,
+            cost: DrawCost {
+                upload: prepared.upload,
+                render: prepared.cpu + start.elapsed().as_secs_f32() * 1000.0,
+                gpu: 0.0,
+            },
+        })
+    }
+
+    /// Waits until the GPU finished a submitted frame (and writes the
+    /// screenshot, if one was requested).
+    pub fn wait(&mut self, device: &wgpu::Device, frame: InFlight) -> Result<DrawCost> {
+        let wait = Instant::now();
         device.poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
+            submission_index: Some(frame.submission),
             timeout: Some(Duration::from_secs(5)),
         })?;
-        for id in &output.textures_delta.free {
+        let mut cost = frame.cost;
+        cost.gpu = wait.elapsed().as_secs_f32() * 1000.0;
+        for id in &frame.free {
             self.painter.free_texture(id);
         }
-        let cost = DrawCost {
-            upload,
-            render: start.elapsed().as_secs_f32() * 1000.0 - upload,
-        };
-        if let (Some(path), Some(buffer)) = (capture, readback) {
-            save_capture(
-                device,
-                &buffer,
-                path,
-                width,
-                height,
-                row_bytes,
-                display.format,
-            )?;
+        if let Some((buffer, path, row_bytes, (width, height), format)) = frame.readback {
+            save_capture(device, &buffer, &path, width, height, row_bytes, format)?;
         }
         Ok(cost)
     }
     /// (meshes resident on the GPU, meshes being built).
+    pub fn draw_stats(&self) -> (usize, [u32; 3]) {
+        self.scene.draw_stats()
+    }
+    pub fn arena_usage(&self) -> (f32, f32, usize) {
+        self.scene.arena_usage()
+    }
     pub fn scene_stats(&self) -> (usize, usize) {
         (self.scene.loaded(), self.scene.pending())
     }

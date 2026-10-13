@@ -136,3 +136,24 @@ struct Star {
     // Blended over the gradient, so faint stars fade instead of popping.
     return vec4(0.92, 0.94, 1.0, input.brightness);
 }
+
+struct Cloud {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) distance: f32,
+}
+@vertex fn vs_cloud(@location(0) pos: vec3<f32>, @location(1) origin: vec4<f32>) -> Cloud {
+    let p = pos + origin.xyz;
+    var o: Cloud;
+    o.clip = camera.matrix * vec4(p, 1.0);
+    o.distance = length(p.xz - camera.eye.xz);
+    return o;
+}
+@fragment fn fs_cloud(input: Cloud) -> @location(0) vec4<f32> {
+    let day = camera.zenith.w;
+    var color = mix(vec3(0.15, 0.17, 0.24), vec3(1.0), smoothstep(0.2, 0.9, day));
+    // Warm undersides at sunrise and sunset.
+    color = mix(color, vec3(1.0, 0.72, 0.55), camera.sun_right.w * 0.45);
+    // Clouds thin out towards the edge of the view instead of ending.
+    let fade = 1.0 - smoothstep(camera.fog.w * 0.8, camera.fog.w * 1.5, input.distance);
+    return vec4(color, 0.8 * fade);
+}

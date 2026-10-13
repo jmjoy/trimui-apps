@@ -6,13 +6,7 @@ use crate::{
     jobs::Pool,
     player::{Intent, Player},
     save::{self, Level, SaveJob, SaveWorker, WorldDir, region::RegionStore},
-    world::{
-        self, World,
-        block::{self, Faces},
-        inside,
-        light::Lighter,
-        stream::Stream,
-    },
+    world::{self, World, block, light::Lighter, stream::Stream},
 };
 use anyhow::Result;
 use glam::{Vec2, Vec3};
@@ -63,6 +57,8 @@ pub struct Menu {
 enum SettingRow {
     ViewDistance,
     SmoothLighting,
+    FancyLeaves,
+    Clouds,
     Sensitivity,
     InvertY,
     Master,
@@ -72,9 +68,11 @@ enum SettingRow {
     Controls,
     Back,
 }
-const SETTINGS: [SettingRow; 10] = [
+const SETTINGS: [SettingRow; 12] = [
     SettingRow::ViewDistance,
     SettingRow::SmoothLighting,
+    SettingRow::FancyLeaves,
+    SettingRow::Clouds,
     SettingRow::Sensitivity,
     SettingRow::InvertY,
     SettingRow::Master,
@@ -435,6 +433,94 @@ impl App {
     pub fn start_world(&mut self) {
         self.play();
     }
+    /// Moves the player; physics waits until the terrain there is loaded.
+    pub fn teleport(&mut self, feet: Vec3) {
+        self.player.position = feet;
+        self.player.velocity = 0.0;
+        self.placed = false;
+        log::info!("Teleported to {feet:?}");
+    }
+    /// Builds a platform showing every kind of block model in front of the
+    /// player (rendering checks with throw-away saves).
+    pub fn build_showcase(&mut self) {
+        use block::*;
+        use glam::IVec3;
+        let base = self.player.position.floor().as_ivec3() - IVec3::new(0, 1, 0);
+        let w = &mut self.world;
+        let at = |x: i32, y: i32, z: i32| base + IVec3::new(x, y, z);
+        for z in -14..=2 {
+            for x in -8..=8 {
+                w.set(at(x, 0, z), STONE);
+                for y in 1..8 {
+                    w.set(at(x, y, z), AIR);
+                }
+            }
+        }
+        // A pool of water with a lava pit beside it.
+        for z in -6..=-4 {
+            for x in -6..=-3 {
+                for y in -2..=0 {
+                    w.set(at(x, y, z), WATER);
+                }
+                w.set(at(x, -3, z), SAND);
+            }
+        }
+        w.set(at(-1, 0, -5), LAVA);
+        // Plants on grass, sand and farmland.
+        let plants = [
+            TALL_GRASS,
+            DANDELION,
+            POPPY,
+            OAK_SAPLING,
+            BIRCH_SAPLING,
+            SPRUCE_SAPLING,
+        ];
+        for (i, plant) in plants.into_iter().enumerate() {
+            let x = i as i32 * 2 - 6;
+            w.set(at(x, 0, -9), GRASS);
+            w.place_block(at(x, 1, -9), plant, 0);
+        }
+        for (x, plant) in [(6, SUGAR_CANE), (7, CACTUS)] {
+            w.set(at(x, 0, -9), SAND);
+            for y in 1..=3 {
+                w.place_block(at(x, y, -9), plant, 0);
+            }
+        }
+        // A wall with glass, leaves, ice, a ladder, a door and torches.
+        let wall = [
+            GLASS,
+            OAK_LEAVES,
+            BIRCH_LEAVES,
+            SPRUCE_LEAVES,
+            ICE,
+            GLOWSTONE,
+        ];
+        for x in -7..=7 {
+            for y in 1..=4 {
+                w.set(at(x, y, -12), STONE_BRICKS);
+            }
+        }
+        for (i, id) in wall.into_iter().enumerate() {
+            let x = i as i32 * 2 - 6;
+            w.set(at(x, 2, -12), id);
+            w.set(at(x, 3, -12), id);
+        }
+        w.place_block(at(6, 1, -11), LADDER, 0);
+        w.place_block(at(6, 2, -11), LADDER, 0);
+        w.place_block(at(4, 1, -11), DOOR, 2);
+        w.place_block(at(-7, 3, -11), TORCH, torch_state(Face::South).unwrap_or(0));
+        w.place_block(at(0, 1, -7), TORCH, 0);
+        w.place_block(at(2, 1, -6), SNOW_LAYER, 0);
+        w.place_block(at(3, 1, -6), SNOW_LAYER, 0);
+        w.place_block(at(-3, 1, -8), CHEST, 2);
+        w.place_block(at(-2, 1, -8), FURNACE, 2);
+        w.place_block(at(-1, 1, -8), CRAFTING_TABLE, 2);
+        self.player.position = at(0, 1, 2).as_vec3() + glam::Vec3::new(0.5, 0.0, 0.5);
+        self.player.yaw = 0.0;
+        self.player.pitch = -0.35;
+        self.player.flying = true;
+        log::info!("Showcase built at {base}");
+    }
     /// Starts an unattended benchmark flight in the current world.
     pub fn start_bench(&mut self) {
         self.play();
@@ -523,6 +609,17 @@ impl App {
                     .map(|row| match row {
                         SettingRow::SmoothLighting => {
                             MenuItem::value("平滑光照", on_off(self.config.video.smooth_lighting))
+                        }
+                        SettingRow::FancyLeaves => MenuItem::value(
+                            "树叶",
+                            if self.config.video.fancy_leaves {
+                                "精致"
+                            } else {
+                                "快速"
+                            },
+                        ),
+                        SettingRow::Clouds => {
+                            MenuItem::value("云", on_off(self.config.video.clouds))
                         }
                         SettingRow::ViewDistance => MenuItem::value(
                             "视距",
@@ -621,6 +718,8 @@ impl App {
         let c = &mut self.config;
         match row {
             SettingRow::SmoothLighting => c.video.smooth_lighting = !c.video.smooth_lighting,
+            SettingRow::FancyLeaves => c.video.fancy_leaves = !c.video.fancy_leaves,
+            SettingRow::Clouds => c.video.clouds = !c.video.clouds,
             SettingRow::ViewDistance => {
                 c.video.view_distance = (c.video.view_distance + step)
                     .clamp(*config::VIEW_DISTANCE.start(), *config::VIEW_DISTANCE.end())
@@ -643,9 +742,11 @@ impl App {
         c.sanitize();
         self.update_audio();
         log::info!(
-            "Settings: view={}, smooth={}, sensitivity={:.1}, invert_y={}, master={:.0}%, effects={:.0}%, all_cores={}, debug_overlay={}",
+            "Settings: view={}, smooth={}, fancy_leaves={}, clouds={}, sensitivity={:.1}, invert_y={}, master={:.0}%, effects={:.0}%, all_cores={}, debug_overlay={}",
             self.config.video.view_distance,
             self.config.video.smooth_lighting,
+            self.config.video.fancy_leaves,
+            self.config.video.clouds,
             self.config.controls.sensitivity,
             self.config.controls.invert_y,
             self.config.audio.master * 100.0,
@@ -910,7 +1011,7 @@ impl App {
             self.edit_after = now + 0.18;
             if dig {
                 let block = self.world.get(hit.block);
-                if self.world.set(hit.block, 0) {
+                if let Some(removed) = self.world.break_block(hit.block) {
                     self.audio.play_at(
                         Sound::Block(Kind::Break, world::material(block)),
                         hit.block.as_vec3() + 0.5,
@@ -918,32 +1019,35 @@ impl App {
                         1.0,
                     );
                     log::info!("Block broken: {:?}, {}", hit.block, block);
+                    for &(p, id) in &removed[1..] {
+                        log::info!("Block dropped: {p:?}, {id}");
+                    }
                 } else {
                     self.message("基岩无法破坏");
                 }
             } else {
-                let target = hit.block + hit.normal;
-                if inside(target)
-                    && hit.normal != glam::IVec3::ZERO
-                    && self.world.get(target) == 0
-                    && !self.player.overlaps(target)
-                {
-                    let id = self.selected();
-                    let state = match block::def(id).faces {
-                        Faces::Front(..) => block::facing_towards_player(self.player.yaw),
-                        _ => 0,
-                    };
-                    if self.world.set_with_state(target, id, state) {
-                        self.audio.play_at(
-                            Sound::Block(Kind::Place, world::material(id)),
-                            target.as_vec3() + 0.5,
-                            1.0,
-                            1.0,
-                        );
-                        log::info!("Block placed: {:?}, {}", target, id);
+                let id = self.selected();
+                match self.world.placement(&hit, id, self.player.yaw) {
+                    Ok((target, _))
+                        if block::solid(id)
+                            && (self.player.overlaps(target)
+                                || (id == block::DOOR
+                                    && self.player.overlaps(target + glam::IVec3::Y))) =>
+                    {
+                        self.message("此处无法放置方块");
                     }
-                } else {
-                    self.message("此处无法放置方块");
+                    Ok((target, state)) => {
+                        if self.world.place_block(target, id, state) {
+                            self.audio.play_at(
+                                Sound::Block(Kind::Place, world::material(id)),
+                                target.as_vec3() + 0.5,
+                                1.0,
+                                1.0,
+                            );
+                            log::info!("Block placed: {:?}, {}", target, id);
+                        }
+                    }
+                    Err(reason) => self.message(reason),
                 }
             }
         }
@@ -1307,6 +1411,11 @@ mod tests {
         let mut app = app(&dir, 42);
         press(&mut app, &[Button::A], 0.0);
         press(&mut app, &[Button::Start], 0.1);
+        // Let the pause save finish so its message cannot replace others.
+        while app.save.busy {
+            app.update(&Frame::default(), 0.0, 0.1);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         app.cursor = 2;
         press(&mut app, &[Button::A], 0.2);
         assert!(app.screen == Screen::Settings);
@@ -1398,9 +1507,10 @@ mod tests {
         let dir = temp("sounds");
         let mut app = app(&dir, 42);
         // A flat grass strip east of the spawn point keeps the walk stable.
-        let floor = app.player.position.floor().as_ivec3().y - 1;
-        for x in -8..22 {
-            for z in -3..4 {
+        let spawn = app.player.position.floor().as_ivec3();
+        let floor = spawn.y - 1;
+        for x in spawn.x - 8..spawn.x + 22 {
+            for z in spawn.z - 3..spawn.z + 4 {
                 app.world.set(glam::IVec3::new(x, floor, z), 1);
                 for y in floor + 1..floor + 5 {
                     app.world.set(glam::IVec3::new(x, y, z), 0);
@@ -1588,6 +1698,42 @@ mod tests {
             block::facing_face(app.world.state(placed)),
             block::Face::South
         );
+        drop(app);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn showcase_lamps_light_the_floor() {
+        let dir = temp("showcase");
+        let mut app = app(&dir, 42);
+        app.start_world();
+        let base = app.player.position.floor().as_ivec3() - glam::IVec3::Y;
+        app.world
+            .generate_area(world::column_of(base + glam::IVec3::new(0, 0, -6)), 3);
+        app.build_showcase();
+        let at = |x, y, z| base + glam::IVec3::new(x, y, z);
+        let near = app.world.light(at(1, 1, -7));
+        let lava = app.world.light(at(-1, 1, -5));
+        assert!(near.unwrap().1 >= 12, "{near:?}");
+        let p = at(1, 0, -7);
+        let key = world::section_of(p);
+        let mesh = crate::mesh::Job::new(&app.world, key, 1, crate::mesh::STYLE_SMOOTH)
+            .unwrap()
+            .build();
+        let local = (p - key * 16) * 16;
+        let top: Vec<_> = mesh
+            .vertices
+            .iter()
+            .filter(|v| {
+                i32::from(v.pos[1]) == local.y + 16
+                    && (i32::from(v.pos[0]) - local.x - 8).abs() <= 8
+                    && (i32::from(v.pos[2]) - local.z - 8).abs() <= 8
+            })
+            .map(|v| v.info)
+            .collect();
+        assert!(!top.is_empty());
+        assert!(top.iter().all(|info| info[2] >= 44), "{top:?}");
+        assert!(lava.unwrap().1 >= 13, "{lava:?}");
         drop(app);
         std::fs::remove_dir_all(dir).unwrap();
     }

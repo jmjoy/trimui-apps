@@ -258,7 +258,7 @@ stage profile="release": (build profile)
         button a
         direction right
         wait_for 'Settings: view=5'
-        repeat down 6
+        repeat down 8
         button a
         wait_for 'CPU cores: option=default'
         printf 'Device CPU online (default): %s\n' "$(cat /sys/devices/system/cpu/online)"
@@ -285,7 +285,7 @@ stage profile="release": (build profile)
         wait_for_count 'Paused' 2
         repeat down 2
         button a
-        repeat down 8
+        repeat down 10
         button a
         repeat down 10
         button a

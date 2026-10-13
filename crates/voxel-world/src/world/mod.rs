@@ -117,7 +117,6 @@ impl World {
         self.set_with_state(p, block, 0)
     }
     /// Block state at `p` (orientation, growth stage, …).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn state(&self, p: IVec3) -> u8 {
         if p.y < 0 || p.y >= HEIGHT {
             return 0;
@@ -216,8 +215,32 @@ impl World {
             if distance > reach {
                 return None;
             }
-            if block::targetable(self.get(p)) {
-                return Some(Hit { block: p, normal });
+            let id = self.get(p);
+            if block::targetable(id) {
+                if block::is_cube(id) {
+                    return Some(Hit {
+                        block: p,
+                        normal,
+                        min: Vec3::ZERO,
+                        max: Vec3::ONE,
+                    });
+                }
+                // Thin models are only hit where their box is.
+                let (lo, hi) = block::bounds(id, self.state(p));
+                let (min, max) = (
+                    IVec3::from(lo).as_vec3() / 16.0,
+                    IVec3::from(hi).as_vec3() / 16.0,
+                );
+                if let Some((t, n)) = ray_box(origin - p.as_vec3(), d, min, max)
+                    && t <= reach
+                {
+                    return Some(Hit {
+                        block: p,
+                        normal: if n == IVec3::ZERO { normal } else { n },
+                        min,
+                        max,
+                    });
+                }
             }
             let axis = if next.x <= next.y && next.x <= next.z {
                 0
@@ -239,7 +262,188 @@ impl World {
 #[derive(Clone, Copy, Debug)]
 pub struct Hit {
     pub block: IVec3,
+    /// Face the ray entered through; zero when it started inside.
     pub normal: IVec3,
+    /// Box of the block's model inside its cell (0–1).
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+/// Entry distance and face normal of a ray hitting a box; (0, zero) when
+/// the origin is inside.
+fn ray_box(origin: Vec3, d: Vec3, min: Vec3, max: Vec3) -> Option<(f32, IVec3)> {
+    let mut near = f32::NEG_INFINITY;
+    let mut far = f32::INFINITY;
+    let mut normal = IVec3::ZERO;
+    for axis in 0..3 {
+        if d[axis] == 0.0 {
+            if origin[axis] < min[axis] || origin[axis] > max[axis] {
+                return None;
+            }
+            continue;
+        }
+        let a = (min[axis] - origin[axis]) / d[axis];
+        let b = (max[axis] - origin[axis]) / d[axis];
+        let (t0, t1) = if a < b { (a, b) } else { (b, a) };
+        if t0 > near {
+            near = t0;
+            normal = IVec3::ZERO;
+            normal[axis] = if d[axis] > 0.0 { -1 } else { 1 };
+        }
+        far = far.min(t1);
+    }
+    if far < near.max(0.0) {
+        return None;
+    }
+    Some(if near < 0.0 {
+        (0.0, IVec3::ZERO)
+    } else {
+        (near, normal)
+    })
+}
+
+/// Placement rules of blocks that need something to stand on or hang from.
+impl World {
+    /// A full cube that plants, torches and ladders can rest on.
+    fn sturdy(&self, p: IVec3) -> bool {
+        let id = self.get(p);
+        block::is_cube(id) && block::solid(id)
+    }
+    /// Whether `id` in `state` can stay at `p`.
+    pub fn supported(&self, p: IVec3, id: u8, state: u8) -> bool {
+        use block::*;
+        let below = self.get(p - IVec3::Y);
+        match def(id).render {
+            Render::Cross if id == SUGAR_CANE => {
+                matches!(below, GRASS | DIRT | SNOWY_GRASS | SAND | SUGAR_CANE)
+            }
+            Render::Cross => matches!(below, GRASS | DIRT | SNOWY_GRASS | FARMLAND),
+            Render::Cactus => matches!(below, SAND | CACTUS),
+            Render::Torch => match torch_pointing(state) {
+                None => self.sturdy(p - IVec3::Y),
+                Some(f) => self.sturdy(p - facing_face(f).normal()),
+            },
+            Render::Ladder => self.sturdy(p - facing_face(state).normal()),
+            Render::Door if state & DOOR_UPPER != 0 => below == DOOR,
+            Render::Door => self.sturdy(p - IVec3::Y) && self.get(p + IVec3::Y) == DOOR,
+            Render::Layer => self.sturdy(p - IVec3::Y),
+            Render::Crop => below == FARMLAND,
+            _ => true,
+        }
+    }
+    /// Removes blocks around `p` that lost their support, repeatedly (a
+    /// stack of cactus falls apart); returns what was removed.
+    pub fn drop_unsupported(&mut self, p: IVec3) -> Vec<(IVec3, u8)> {
+        let mut removed = Vec::new();
+        let mut check = vec![p];
+        while let Some(c) = check.pop() {
+            if removed.len() >= 256 {
+                break;
+            }
+            for d in [
+                IVec3::Y,
+                IVec3::NEG_Y,
+                IVec3::X,
+                IVec3::NEG_X,
+                IVec3::Z,
+                IVec3::NEG_Z,
+            ] {
+                let q = c + d;
+                let id = self.get(q);
+                if id == 0 || block::is_cube(id) || block::liquid(id) {
+                    continue;
+                }
+                if !self.supported(q, id, self.state(q)) && self.set(q, 0) {
+                    removed.push((q, id));
+                    check.push(q);
+                }
+            }
+        }
+        removed
+    }
+    /// Breaks the block at `p` with everything that depended on it.
+    pub fn break_block(&mut self, p: IVec3) -> Option<Vec<(IVec3, u8)>> {
+        let id = self.get(p);
+        let state = self.state(p);
+        if !self.set(p, 0) {
+            return None;
+        }
+        let mut removed = vec![(p, id)];
+        if id == block::DOOR {
+            let other = if state & block::DOOR_UPPER != 0 {
+                p - IVec3::Y
+            } else {
+                p + IVec3::Y
+            };
+            if self.get(other) == block::DOOR && self.set(other, 0) {
+                removed.push((other, id));
+            }
+        }
+        let cells: Vec<_> = removed.iter().map(|(c, _)| *c).collect();
+        for c in cells {
+            removed.extend(self.drop_unsupported(c));
+        }
+        Some(removed)
+    }
+    /// Where and in which state `id` goes when placed against `hit` by a
+    /// player looking along `yaw`.
+    pub fn placement(&self, hit: &Hit, id: u8, yaw: f32) -> Result<(IVec3, u8), &'static str> {
+        use block::*;
+        let refuse = "此处无法放置方块";
+        let hit_id = self.get(hit.block);
+        let target = if replaceable(hit_id) {
+            hit.block
+        } else if hit.normal == IVec3::ZERO {
+            return Err(refuse);
+        } else {
+            hit.block + hit.normal
+        };
+        if !inside(target) || !replaceable(self.get(target)) {
+            return Err(refuse);
+        }
+        let face = Face::from_normal(hit.normal);
+        let state = match def(id).render {
+            Render::Torch => match face {
+                Some(Face::Up) => 0,
+                Some(f) if facing_index(f).is_some() => torch_state(f).unwrap_or(0),
+                _ => return Err("火把只能放在方块的顶面或侧面"),
+            },
+            Render::Ladder => match face.and_then(facing_index) {
+                Some(i) => i,
+                None => return Err("梯子只能挂在方块侧面"),
+            },
+            Render::Door => {
+                let up = target + IVec3::Y;
+                if !inside(up) || !replaceable(self.get(up)) {
+                    return Err("门需要两格高的空间");
+                }
+                if !self.sturdy(target - IVec3::Y) {
+                    return Err("门需要放在完整方块上");
+                }
+                return Ok((target, player_facing(yaw)));
+            }
+            _ if matches!(def(id).faces, Faces::Front(..)) => facing_towards_player(yaw),
+            _ => 0,
+        };
+        if !self.supported(target, id, state) {
+            return Err(match def(id).render {
+                Render::Cross if id == SUGAR_CANE => "甘蔗需要种在草地、泥土或沙子上",
+                Render::Cross => "植物需要种在草地或泥土上",
+                Render::Cactus => "仙人掌需要种在沙子上",
+                _ => "需要贴着完整的方块放置",
+            });
+        }
+        Ok((target, state))
+    }
+    /// Places a block computed by `placement` (doors take two cells).
+    pub fn place_block(&mut self, p: IVec3, id: u8, state: u8) -> bool {
+        if id == block::DOOR {
+            let lower = state & 3;
+            return self.set_with_state(p + IVec3::Y, id, lower | block::DOOR_UPPER)
+                && self.set_with_state(p, id, lower);
+        }
+        self.set_with_state(p, id, state)
+    }
 }
 
 #[cfg(test)]
@@ -316,5 +520,106 @@ mod tests {
         );
         assert_eq!(column_of(IVec3::new(-1, 0, -16)), IVec2::new(-1, -1));
         assert_eq!(section_of(IVec3::new(-1, 17, 16)), IVec3::new(-1, 1, 1));
+    }
+
+    #[test]
+    fn rays_hit_model_boxes_only() {
+        let mut w = World::new(0);
+        w.empty_area(IVec2::ZERO, 1);
+        w.set(IVec3::new(4, 39, 4), block::STONE);
+        w.set(IVec3::new(4, 40, 4), block::TORCH);
+        // Through the empty corner of the torch cell onto the stone below.
+        let h = w
+            .raycast(Vec3::new(4.1, 41.5, 4.1), Vec3::new(0.0, -1.0, 0.0), 6.0)
+            .unwrap();
+        assert_eq!(h.block, IVec3::new(4, 39, 4));
+        // Straight at the torch stick.
+        let h = w.raycast(Vec3::new(4.5, 40.3, 2.0), Vec3::Z, 6.0).unwrap();
+        assert_eq!(h.block, IVec3::new(4, 40, 4));
+        assert_eq!(h.normal, IVec3::NEG_Z);
+        assert!((h.max.y - 10.0 / 16.0).abs() < 1e-6);
+        assert_eq!(
+            ray_box(Vec3::splat(0.5), Vec3::X, Vec3::ZERO, Vec3::ONE),
+            Some((0.0, IVec3::ZERO))
+        );
+    }
+
+    #[test]
+    fn placement_rules_support_and_cascading_breaks() {
+        let mut w = World::new(0);
+        w.empty_area(IVec2::ZERO, 1);
+        for x in 0..8 {
+            w.set(IVec3::new(x, 39, 4), block::GRASS);
+        }
+        w.set(IVec3::new(4, 40, 5), block::STONE);
+        let ground = |x: i32| Hit {
+            block: IVec3::new(x, 39, 4),
+            normal: IVec3::Y,
+            min: Vec3::ZERO,
+            max: Vec3::ONE,
+        };
+        // Plants need soil, cactus sand; torches and ladders a wall.
+        assert_eq!(
+            w.placement(&ground(1), block::POPPY, 0.0),
+            Ok((IVec3::new(1, 40, 4), 0))
+        );
+        assert!(w.placement(&ground(1), block::CACTUS, 0.0).is_err());
+        let wall = Hit {
+            block: IVec3::new(4, 40, 5),
+            normal: IVec3::NEG_Z,
+            min: Vec3::ZERO,
+            max: Vec3::ONE,
+        };
+        let (at, state) = w.placement(&wall, block::TORCH, 0.0).unwrap();
+        assert_eq!(
+            (at, block::torch_pointing(state)),
+            (IVec3::new(4, 40, 4), Some(0))
+        );
+        let (_, ladder) = w.placement(&wall, block::LADDER, 0.0).unwrap();
+        assert_eq!(block::facing_face(ladder), block::Face::North);
+        let down = Hit {
+            normal: IVec3::NEG_Y,
+            ..wall
+        };
+        assert!(
+            w.placement(&down, block::TORCH, 0.0).is_err(),
+            "no ceiling torches"
+        );
+        assert!(w.place_block(at, block::TORCH, state));
+        // Tall grass is replaced by what is placed on it.
+        w.set(IVec3::new(2, 40, 4), block::TALL_GRASS);
+        let grass = Hit {
+            block: IVec3::new(2, 40, 4),
+            normal: IVec3::Y,
+            ..wall
+        };
+        assert_eq!(
+            w.placement(&grass, block::STONE, 0.0).unwrap().0,
+            IVec3::new(2, 40, 4)
+        );
+        // Doors take two cells and break together.
+        let (door, facing) = w.placement(&ground(6), block::DOOR, 0.0).unwrap();
+        assert!(w.place_block(door, block::DOOR, facing));
+        assert_eq!(w.get(door + IVec3::Y), block::DOOR);
+        assert_ne!(w.state(door + IVec3::Y) & block::DOOR_UPPER, 0);
+        let removed = w.break_block(door + IVec3::Y).unwrap();
+        assert_eq!(removed.len(), 2);
+        assert_eq!((w.get(door), w.get(door + IVec3::Y)), (0, 0));
+        // Removing the wall drops the torch; removing soil drops the flower.
+        w.place_block(IVec3::new(1, 40, 4), block::POPPY, 0);
+        let removed = w.break_block(IVec3::new(4, 40, 5)).unwrap();
+        assert!(removed.contains(&(IVec3::new(4, 40, 4), block::TORCH)));
+        assert_eq!(w.get(IVec3::new(4, 40, 4)), 0);
+        w.break_block(IVec3::new(1, 39, 4)).unwrap();
+        assert_eq!(w.get(IVec3::new(1, 40, 4)), 0);
+        // Sugar cane stacks fall apart from the bottom.
+        w.set(IVec3::new(3, 39, 4), block::SAND);
+        for y in 40..43 {
+            w.set(IVec3::new(3, y, 4), block::SUGAR_CANE);
+        }
+        let removed = w.break_block(IVec3::new(3, 40, 4)).unwrap();
+        assert_eq!(removed.len(), 3);
+        // Plants never collide.
+        assert!(!w.solid(IVec3::new(3, 41, 4)));
     }
 }

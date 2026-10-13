@@ -241,7 +241,12 @@ const fn block(
         tier: 0,
         light: 0,
         opacity,
-        creative: matches!(render, Render::Opaque | Render::Leaves),
+        // Blocks that need special placement (two-block beds, crops on
+        // farmland) are offered once their mechanics exist.
+        creative: !matches!(
+            render,
+            Render::Air | Render::Bed | Render::Farmland | Render::Crop
+        ),
     }
 }
 impl BlockDef {
@@ -260,6 +265,10 @@ impl BlockDef {
     }
     const fn silent(mut self) -> Self {
         self.material = None;
+        self
+    }
+    const fn opacity(mut self, opacity: u8) -> Self {
+        self.opacity = opacity;
         self
     }
 }
@@ -427,12 +436,12 @@ pub static BLOCKS: [BlockDef; 63] = [
     )
     .tool(Shovel, 0),
     block("ice", "冰", R::Translucent, All(T::Ice), M::Glass, 0.5).tool(Pickaxe, 0),
+    // Sunlight fades one level per block of water, so shallow seas stay lit.
     block("water", "水", R::Liquid, All(T::Water), M::Stone, -1.0)
         .silent()
-        .hidden(),
+        .opacity(1),
     block("lava", "岩浆", R::Liquid, All(T::Lava), M::Stone, -1.0)
         .silent()
-        .hidden()
         .light(15),
     block(
         "obsidian",
@@ -834,6 +843,169 @@ pub fn palette() -> Vec<u8> {
     (0..COUNT as u8).filter(|&id| def(id).creative).collect()
 }
 
+/// Render pass of a block's faces.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Pass {
+    Opaque = 0,
+    /// Alpha-tested: fully transparent pixels are discarded.
+    Cutout = 1,
+    /// Blended after everything else, far to near.
+    Translucent = 2,
+}
+pub fn pass(id: u8, fancy_leaves: bool) -> Pass {
+    match def(id).render {
+        Render::Leaves if fancy_leaves => Pass::Cutout,
+        Render::Cutout
+        | Render::Cross
+        | Render::Torch
+        | Render::Cactus
+        | Render::Ladder
+        | Render::Door
+        | Render::Bed
+        | Render::Crop => Pass::Cutout,
+        Render::Translucent => Pass::Translucent,
+        Render::Liquid if id == WATER => Pass::Translucent,
+        _ => Pass::Opaque,
+    }
+}
+/// Whether `neighbour` hides the face of a block touching it. Leaves only
+/// hide faces when drawn without holes ("fast leaves").
+pub fn hides(neighbour: u8, fancy_leaves: bool) -> bool {
+    match def(neighbour).render {
+        Render::Opaque => true,
+        Render::Leaves => !fancy_leaves,
+        _ => false,
+    }
+}
+pub fn liquid(id: u8) -> bool {
+    def(id).render == Render::Liquid
+}
+/// Blocks a placed block may replace.
+pub fn replaceable(id: u8) -> bool {
+    matches!(id, AIR | WATER | LAVA | TALL_GRASS | SNOW_LAYER)
+}
+/// Liquid state: level 0 (source) to 7 in bits 0–2, falling in bit 3.
+pub fn liquid_level(state: u8) -> u8 {
+    state & 7
+}
+pub fn liquid_falling(state: u8) -> bool {
+    state & 8 != 0
+}
+/// Surface height of a liquid cell in 1/16 blocks (when nothing of the
+/// same liquid lies above it).
+pub fn liquid_height(state: u8) -> i32 {
+    if liquid_falling(state) {
+        14
+    } else {
+        [14, 12, 11, 9, 7, 6, 4, 2][usize::from(liquid_level(state))]
+    }
+}
+
+/// Index of a horizontal face as stored in facing states (0 N, 1 E, 2 S, 3 W).
+pub fn facing_index(face: Face) -> Option<u8> {
+    match face {
+        Face::North => Some(0),
+        Face::East => Some(1),
+        Face::South => Some(2),
+        Face::West => Some(3),
+        _ => None,
+    }
+}
+/// Direction a player looking along `yaw` faces.
+pub fn player_facing(yaw: f32) -> u8 {
+    (facing_towards_player(yaw) + 2) & 3
+}
+impl Face {
+    pub fn from_normal(n: glam::IVec3) -> Option<Self> {
+        Some(match (n.x, n.y, n.z) {
+            (1, 0, 0) => Face::East,
+            (-1, 0, 0) => Face::West,
+            (0, 1, 0) => Face::Up,
+            (0, -1, 0) => Face::Down,
+            (0, 0, 1) => Face::South,
+            (0, 0, -1) => Face::North,
+            _ => return None,
+        })
+    }
+    pub fn normal(self) -> glam::IVec3 {
+        match self {
+            Face::East => glam::IVec3::X,
+            Face::West => glam::IVec3::NEG_X,
+            Face::Up => glam::IVec3::Y,
+            Face::Down => glam::IVec3::NEG_Y,
+            Face::South => glam::IVec3::Z,
+            Face::North => glam::IVec3::NEG_Z,
+        }
+    }
+    /// The face after turning a north-facing model to `facing` (0–3).
+    pub fn rotated(self, facing: u8) -> Self {
+        let mut f = self;
+        for _ in 0..facing & 3 {
+            f = match f {
+                Face::North => Face::East,
+                Face::East => Face::South,
+                Face::South => Face::West,
+                Face::West => Face::North,
+                other => other,
+            };
+        }
+        f
+    }
+}
+
+/// Torch state: 0 standing, 1–4 on a wall pointing north/east/south/west.
+pub fn torch_state(pointing: Face) -> Option<u8> {
+    facing_index(pointing).map(|i| i + 1)
+}
+pub fn torch_pointing(state: u8) -> Option<u8> {
+    (1..=4).contains(&state).then(|| state - 1)
+}
+/// Door state: facing in bits 0–1, upper half in bit 2, open in bit 3.
+pub const DOOR_UPPER: u8 = 4;
+pub const DOOR_OPEN: u8 = 8;
+/// Bed state: facing in bits 0–1, head half in bit 2.
+pub const BED_HEAD: u8 = 4;
+
+/// Turns a point of a north-facing model (1/16 units) to `facing`.
+pub fn rotate_xz(x: i32, z: i32, facing: u8) -> (i32, i32) {
+    match facing & 3 {
+        0 => (x, z),
+        1 => (16 - z, x),
+        2 => (16 - x, 16 - z),
+        _ => (z, 16 - x),
+    }
+}
+fn rotate_box(min: [i32; 3], max: [i32; 3], facing: u8) -> ([i32; 3], [i32; 3]) {
+    let (ax, az) = rotate_xz(min[0], min[2], facing);
+    let (bx, bz) = rotate_xz(max[0], max[2], facing);
+    (
+        [ax.min(bx), min[1], az.min(bz)],
+        [ax.max(bx), max[1], az.max(bz)],
+    )
+}
+
+/// Selection and ray-test box in 1/16 block units.
+pub fn bounds(id: u8, state: u8) -> ([i32; 3], [i32; 3]) {
+    let full = ([0, 0, 0], [16, 16, 16]);
+    match def(id).render {
+        Render::Cross if id == SUGAR_CANE => ([2, 0, 2], [14, 16, 14]),
+        Render::Cross => ([2, 0, 2], [14, 13, 14]),
+        Render::Torch => match torch_pointing(state) {
+            None => ([6, 0, 6], [10, 10, 10]),
+            Some(f) => rotate_box([5, 3, 8], [11, 14, 16], f),
+        },
+        Render::Cactus => ([1, 0, 1], [15, 16, 15]),
+        Render::Ladder => rotate_box([0, 0, 13], [16, 16, 16], state & 3),
+        Render::Door if state & DOOR_OPEN != 0 => rotate_box([0, 0, 0], [3, 16, 16], state & 3),
+        Render::Door => rotate_box([0, 0, 13], [16, 16, 16], state & 3),
+        Render::Bed => ([0, 0, 0], [16, 9, 16]),
+        Render::Layer => ([0, 0, 0], [16, 2, 16]),
+        Render::Farmland => ([0, 0, 0], [16, 15, 16]),
+        Render::Crop => ([0, 0, 0], [16, 4 + 2 * i32::from(state.min(6)), 16]),
+        _ => full,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,8 +1043,13 @@ mod tests {
         assert_eq!(Tex::all().count(), TEX_COUNT);
         assert!(Tex::all().enumerate().all(|(i, t)| t.layer() as usize == i));
         let palette = palette();
-        assert!(palette.len() >= 30, "{}", palette.len());
-        assert!(palette.iter().all(|&id| is_cube(id) && id != BEDROCK));
+        assert!(palette.len() >= 55, "{}", palette.len());
+        for hidden in [AIR, BEDROCK, FURNACE_LIT, FARMLAND, WHEAT, BED] {
+            assert!(!palette.contains(&hidden), "{}", def(hidden).key);
+        }
+        for shown in [GLASS, WATER, TORCH, TALL_GRASS, LADDER, DOOR, SNOW_LAYER] {
+            assert!(palette.contains(&shown), "{}", def(shown).key);
+        }
     }
 
     #[test]
@@ -918,5 +1095,43 @@ mod tests {
         assert_eq!(def(GLOWSTONE).light, 15);
         assert_eq!(def(STONE).opacity, 15);
         assert!(def(BEDROCK).hardness < 0.0);
+    }
+
+    #[test]
+    fn passes_liquids_and_model_bounds() {
+        assert_eq!(pass(STONE, true), Pass::Opaque);
+        assert_eq!(pass(OAK_LEAVES, false), Pass::Opaque);
+        assert_eq!(pass(OAK_LEAVES, true), Pass::Cutout);
+        assert_eq!(pass(GLASS, false), Pass::Cutout);
+        assert_eq!(pass(TORCH, false), Pass::Cutout);
+        assert_eq!(pass(WATER, false), Pass::Translucent);
+        assert_eq!(pass(ICE, false), Pass::Translucent);
+        assert_eq!(pass(LAVA, false), Pass::Opaque);
+        assert!(hides(STONE, true) && hides(OAK_LEAVES, false) && !hides(OAK_LEAVES, true));
+        assert!(!hides(WATER, false) && !hides(GLASS, false) && !hides(TORCH, false));
+        assert_eq!(liquid_height(0), 14);
+        assert!(liquid_height(7) < liquid_height(1));
+        assert_eq!(liquid_height(8 | 5), 14, "falling liquid is tall");
+        assert!(replaceable(WATER) && replaceable(TALL_GRASS) && !replaceable(STONE));
+        assert_eq!(bounds(STONE, 0), ([0, 0, 0], [16, 16, 16]));
+        assert_eq!(bounds(TORCH, 0), ([6, 0, 6], [10, 10, 10]));
+        // A torch pointing east hangs on the wall to its west.
+        let (min, max) = bounds(TORCH, torch_state(Face::East).unwrap());
+        assert_eq!((min[0], max[0]), (0, 8), "{min:?} {max:?}");
+        // Ladders and doors turn with their facing.
+        assert_eq!(bounds(LADDER, 0).0[2], 13);
+        assert_eq!(bounds(LADDER, 2).1[2], 3);
+        let (min, max) = bounds(DOOR, 1);
+        assert_eq!((min[0], max[0], min[2], max[2]), (0, 3, 0, 16));
+        assert_eq!(rotate_xz(0, 16, 1), (0, 0));
+        assert_eq!(Face::North.rotated(1), Face::East);
+        assert_eq!(Face::West.rotated(3), Face::South);
+        assert_eq!(Face::from_normal(glam::IVec3::NEG_Z), Some(Face::North));
+        assert_eq!(player_facing(0.0), 0, "looking north");
+        assert_eq!(
+            player_facing(std::f32::consts::FRAC_PI_2),
+            1,
+            "looking east"
+        );
     }
 }

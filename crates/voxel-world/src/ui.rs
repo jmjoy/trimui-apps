@@ -29,6 +29,10 @@ pub struct Diagnostics {
     pub gen_ms: f32,
     pub light_ms: f32,
     pub lighting: usize,
+    pub draws: usize,
+    pub triangles: [u32; 3],
+    /// Mesh vertex and index MiB, page count.
+    pub arena: (f32, f32, usize),
     pub audio: crate::audio::AudioStats,
 }
 impl Default for Diagnostics {
@@ -51,6 +55,9 @@ impl Default for Diagnostics {
             gen_ms: 0.0,
             light_ms: 0.0,
             lighting: 0,
+            draws: 0,
+            triangles: [0; 3],
+            arena: (0.0, 0.0, 0),
             audio: Default::default(),
         }
     }
@@ -75,9 +82,12 @@ impl Diagnostics {
             ),
             format!("频率 {} MHz   调频 {}", t.freq_label(), t.governor),
             format!(
-                "温度 CPU/GPU {} °C   内存 {:.1} MB",
+                "温度 CPU/GPU {} °C   内存 {:.1} MB   网格 {:.1}+{:.1} MB / {} 页",
                 t.temp_label(),
-                t.rss_mb
+                t.rss_mb,
+                self.arena.0,
+                self.arena.1,
+                self.arena.2
             ),
             format!(
                 "区块柱 {}（{:.1} MB）加载中 {}  生成 {:.1} ms  网格段 {} 构建中 {}",
@@ -89,8 +99,14 @@ impl Diagnostics {
                 self.pending
             ),
             format!(
-                "队列 生成 {}  光照 {}  网格 {}",
-                self.queued[0], self.queued[1], self.queued[2]
+                "队列 生成 {} 光照 {} 网格 {}   绘制 {} 段 三角形 {}/{}/{}",
+                self.queued[0],
+                self.queued[1],
+                self.queued[2],
+                self.draws,
+                self.triangles[0],
+                self.triangles[1],
+                self.triangles[2]
             ),
             format!(
                 "音频 回调 平均 {:.0} µs / 最大 {:.0} µs  负载 {:.1}%  声道峰值 {}",
@@ -103,9 +119,12 @@ impl Diagnostics {
                 let (day, hour, minute) = crate::render::sky::clock(app.time);
                 let eye = app.player.eye().floor().as_ivec3();
                 let (sky, block) = app.world.light(eye).unwrap_or((0, 0));
+                let biome = crate::world::terrain::biome_at(app.world.seed, eye.x, eye.z);
                 format!(
-                    "第 {day} 天 {hour:02}:{minute:02}   光照 天空 {sky} 方块 {block}   光照计算 {:.1} ms 待算 {}",
-                    self.light_ms, self.lighting
+                    "第 {day} 天 {hour:02}:{minute:02}  {}  光照 天空 {sky} 方块 {block}  光照计算 {:.1} ms 待算 {}",
+                    biome.name(),
+                    self.light_ms,
+                    self.lighting
                 )
             },
             format!(
@@ -187,8 +206,16 @@ pub fn draw(
             let mut points = [egui::Pos2::ZERO; 8];
             let mut valid = true;
             for (i, point) in points.iter_mut().enumerate() {
+                // Slightly larger than the model so the lines stay visible.
+                let pick = |bit: usize, axis: usize| {
+                    if bit == 0 {
+                        hit.min[axis] - 0.002
+                    } else {
+                        hit.max[axis] + 0.002
+                    }
+                };
                 let v = (hit.block - origin).as_vec3()
-                    + Vec3::new((i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32);
+                    + Vec3::new(pick(i & 1, 0), pick((i >> 1) & 1, 1), pick((i >> 2) & 1, 2));
                 let q = matrix * v.extend(1.0);
                 if q.w <= 0.0 {
                     valid = false;

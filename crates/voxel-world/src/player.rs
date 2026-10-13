@@ -228,7 +228,18 @@ mod tests {
     #[test]
     fn gravity_jump_wall_and_flight() {
         let mut w = World::new(42);
-        w.generate_area(glam::IVec2::ZERO, 1);
+        let spawn = w.spawn().floor().as_ivec3();
+        w.generate_area(crate::world::column_of(spawn), 1);
+        // A flat stone pad keeps the test independent of the terrain shape.
+        for z in -3..=3 {
+            for x in -3..=3 {
+                let p = spawn + IVec3::new(x, -1, z);
+                w.set(p, crate::world::block::STONE);
+                for y in 0..6 {
+                    w.set(p + IVec3::new(0, 1 + y, 0), 0);
+                }
+            }
+        }
         let mut p = Player::new(&w);
         step(&mut p, &w, Intent::default(), 120);
         assert!(p.grounded);
@@ -324,6 +335,7 @@ mod tests {
     fn invalid_saves_reset_and_buried_players_climb_out() {
         let mut w = World::new(42);
         w.generate_area(glam::IVec2::ZERO, 1);
+        w.generate_area(crate::world::column_of(w.spawn().floor().as_ivec3()), 1);
         let mut p = Player::new(&w);
         p.position = Vec3::new(f32::NAN, 0.0, 0.0);
         p.restore_if_invalid(42);

@@ -55,6 +55,7 @@ pub struct Timings {
     pub update: f32,
     pub upload: f32,
     pub render: f32,
+    pub gpu: f32,
     pub present: f32,
 }
 
@@ -70,6 +71,7 @@ impl Stats {
         self.sum.update += timings.update;
         self.sum.upload += timings.upload;
         self.sum.render += timings.render;
+        self.sum.gpu += timings.gpu;
         self.sum.present += timings.present;
     }
     pub fn frames(&self) -> usize {
@@ -92,6 +94,7 @@ impl Stats {
             update: self.sum.update / n,
             upload: self.sum.upload / n,
             render: self.sum.render / n,
+            gpu: self.sum.gpu / n,
             present: self.sum.present / n,
         };
         (1000.0 * n / total, 1000.0 / p1, worst, avg)
