@@ -35,5 +35,11 @@ run project="chinese_chess" *args:
 input-test project="chinese_chess":
     just {{ project }}::input-test
 
+bench project="voxel_world" seconds="40":
+    just {{ project }}::bench "{{ seconds }}"
+
+exit-test project="voxel_world":
+    just {{ project }}::exit-test
+
 clean project="chinese_chess":
     just {{ project }}::clean

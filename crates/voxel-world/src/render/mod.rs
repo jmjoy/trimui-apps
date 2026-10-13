@@ -1,13 +1,33 @@
+pub mod icons;
+pub mod sky;
+pub mod textures;
+
 use crate::{
     app::App,
     display::{DirectDisplay, Target},
+    jobs::Pool,
     scene::Scene,
-    ui,
+    ui::{self, Diagnostics},
 };
 use anyhow::{Context, Result, ensure};
-use std::{fs::File, io::BufWriter, path::Path, time::Duration};
+use std::{
+    fs::File,
+    io::BufWriter,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+/// CPU milliseconds spent in one `draw` call.
+#[derive(Clone, Copy, Default)]
+pub struct DrawCost {
+    pub upload: f32,
+    pub render: f32,
+}
 
 pub struct Renderer {
+    icons: ui::Icons,
+    _icon_texture: egui::TextureHandle,
     egui: egui::Context,
     painter: egui_wgpu::Renderer,
     scene: Scene,
@@ -18,13 +38,31 @@ impl Renderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
+        pool: Arc<Pool>,
     ) -> Result<Self> {
         let egui = egui::Context::default();
         egui.set_pixels_per_point(1.0);
 
         install_cjk_font(&egui)?;
+        let atlas = icons::build(&textures::all());
+        let icon_texture = egui.load_texture(
+            "block icons",
+            egui::ColorImage::from_rgba_unmultiplied([atlas.width, atlas.height], &atlas.rgba),
+            egui::TextureOptions::NEAREST,
+        );
+        let uv = (0..crate::world::block::COUNT as u8)
+            .map(|id| {
+                let [x0, y0, x1, y1] = atlas.uv(id);
+                egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+            })
+            .collect();
         Ok(Self {
-            scene: Scene::new(device, queue, format),
+            icons: ui::Icons {
+                texture: icon_texture.id(),
+                uv,
+            },
+            _icon_texture: icon_texture,
+            scene: Scene::new(device, queue, format, pool),
             egui,
             painter: egui_wgpu::Renderer::new(device, format, Default::default()),
         })
@@ -39,12 +77,13 @@ impl Renderer {
         display: &DirectDisplay,
         app: &App,
         elapsed: f64,
-        fps: f64,
+        diag: &Diagnostics,
         capture: Option<&Path>,
-    ) -> Result<()> {
+    ) -> Result<DrawCost> {
+        let start = Instant::now();
         let width = display.extent.width;
         let height = display.extent.height;
-        self.scene.update(device, queue, app);
+        let upload = self.scene.update(device, queue, app);
         let output = self.egui.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -54,7 +93,16 @@ impl Renderer {
                 time: Some(elapsed),
                 ..Default::default()
             },
-            |ui| ui::draw(ui, app, fps, self.scene.matrix),
+            |ui| {
+                ui::draw(
+                    ui,
+                    app,
+                    diag,
+                    &self.icons,
+                    self.scene.matrix,
+                    self.scene.origin,
+                )
+            },
         );
         let jobs = self.egui.tessellate(output.shapes, output.pixels_per_point);
         for (id, deltas) in &output.textures_delta.set {
@@ -146,6 +194,10 @@ impl Renderer {
         for id in &output.textures_delta.free {
             self.painter.free_texture(id);
         }
+        let cost = DrawCost {
+            upload,
+            render: start.elapsed().as_secs_f32() * 1000.0 - upload,
+        };
         if let (Some(path), Some(buffer)) = (capture, readback) {
             save_capture(
                 device,
@@ -157,8 +209,39 @@ impl Renderer {
                 display.format,
             )?;
         }
-        Ok(())
+        Ok(cost)
     }
+    /// (meshes resident on the GPU, meshes being built).
+    pub fn scene_stats(&self) -> (usize, usize) {
+        (self.scene.loaded(), self.scene.pending())
+    }
+}
+
+/// Writes the tile sheet and the icon atlas as PNG files (host tool).
+pub fn dump_atlas(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tiles = textures::all();
+    textures::write_sheet(&dir.join("textures.png"), &tiles)?;
+    let atlas = icons::build(&tiles);
+    textures::write_png(
+        &dir.join("icons.png"),
+        atlas.width as u32,
+        atlas.height as u32,
+        &atlas.rgba,
+    )?;
+    let names: Vec<String> = crate::world::block::Tex::all()
+        .enumerate()
+        .map(|(i, t)| format!("{i:3} {t:?}"))
+        .collect();
+    std::fs::write(dir.join("textures.txt"), names.join("\n") + "\n")?;
+    log::info!(
+        "Atlas: {} tiles, icons {}x{} in {}",
+        tiles.len(),
+        atlas.width,
+        atlas.height,
+        dir.display()
+    );
+    Ok(())
 }
 
 fn install_cjk_font(ctx: &egui::Context) -> Result<()> {
