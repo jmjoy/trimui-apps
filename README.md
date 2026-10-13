@@ -35,3 +35,7 @@ just gomoku::run
 ```
 
 新增项目时，将项目放在 `crates/` 下，在根 `justfile` 注册一个 Just module，并在项目目录维护自己的 `justfile`。
+
+## 许可证
+
+本项目采用 [木兰宽松许可证，第 2 版（Mulan PSL v2）](LICENSE)。
