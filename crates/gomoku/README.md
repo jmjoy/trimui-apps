@@ -1,4 +1,4 @@
-# TrimUI Smart Pro 木棋 · 五子棋
+# TrimUI Smart Pro 五子棋
 
 面向掌机的人机五子棋，具有 WGSL 木纹、棋子阴影、落子动画、胜利连线、提示和原创合成背景音乐。显示、手柄和部署方式与中国象棋一致：Rust + wgpu 30.0.1 / Vulkan `VK_KHR_display` + egui 0.36.2 + CPAL 0.18.2，直接显示到 1280×720 内屏。
 

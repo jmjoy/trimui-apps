@@ -7,7 +7,7 @@
 | 项目 | Just module | 安装目录 |
 | --- | --- | --- |
 | [中国象棋](crates/chinese-chess/README.md) | `chinese_chess` | `/mnt/SDCARD/Ports/ChineseChess` |
-| [木棋 · 五子棋](crates/gomoku/README.md) | `gomoku` | `/mnt/SDCARD/Ports/Gomoku` |
+| [五子棋](crates/gomoku/README.md) | `gomoku` | `/mnt/SDCARD/Ports/Gomoku` |
 | [方块世界](crates/voxel-world/README.md) | `voxel_world` | `/mnt/SDCARD/Ports/VoxelWorld` |
 
 各子项目维护自己的 `justfile`，根 `justfile` 提供统一入口：

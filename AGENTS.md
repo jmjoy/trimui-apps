@@ -7,7 +7,7 @@
 - 子项目依赖版本统一在根 `Cargo.toml` 的 `[workspace.dependencies]` 中维护；子项目使用 `anyhow = { workspace = true }` 这样的内联表继承，不使用 `anyhow.workspace = true`；额外的 `features` 写在同一内联表中。
 - 目标使用 `aarch64-unknown-linux-gnu.2.33`，通过 `cargo zigbuild` 交叉编译；不要直接用主机 glibc 链接掌机程序。
 - 根 `toolchain/pkgconfig/alsa.pc` 和 `toolchain/device-libs/libasound.so.2` 是构建 CPAL/ALSA 所需的最小目标库；运行时使用掌机固件自带库。
-- 构建、打包、ADB 部署和实机测试由根 `justfile` 与各子项目的 `justfile` 管理，不要生成`scripts`文件夹。
+- 构建、打包、ADB 部署和实机测试由根 `justfile` 与各子项目的 `justfile` 管理。
 
 ## 显示与图形
 

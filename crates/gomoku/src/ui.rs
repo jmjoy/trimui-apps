@@ -78,7 +78,7 @@ pub fn draw(ui: &mut egui::Ui, app: &App, fps: f64) -> BoardLayout {
             color,
         );
     };
-    text(32.0, "五子棋 · 木棋", 36.0, GREEN);
+    text(32.0, "五子棋", 36.0, GREEN);
     text(82.0, "木纹之间 · 黑白对弈", 19.0, MUTED);
     if app.setup || app.menu {
         text(
