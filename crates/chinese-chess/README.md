@@ -29,7 +29,11 @@
 ```sh
 just build chinese_chess
 just deploy chinese_chess
+# 另行部署并运行冒烟测试
+just chinese_chess::smoke-test
 ```
+
+根目录省略模块名时处理全部项目：`just package` 生成 `artifacts/trimui-apps-trimui-smart-pro.tar.gz`；`just deploy` 上传并安装该压缩包。部署仅安装，不启动应用；`just chinese_chess::smoke-test` 会先部署该模块，再运行冒烟测试。
 
 构建结果：
 
@@ -49,10 +53,10 @@ just test
 just clippy
 
 # 掌机限时运行，退出 / 报错 / 信号都会恢复 MainUI
-just run chinese_chess -- --seconds 15 --capture /tmp/chinese-chess.png
+just chinese_chess::run -- --seconds 15 --capture /tmp/chinese-chess.png
 
 # 实机手柄事件测试：需额外安装 Node.js，只用于生成测试事件
-just input-test chinese_chess
+just chinese_chess::input-test
 ```
 
 `input-test` 向现有 `TRIMUI Player1` 的 `/dev/input/event3` 注入按键，依次验证执红走子、AI 回应、悔棋、重开、执黑走子及悔棋、组合键退出，保存 `artifacts/input-test.log` 和 `artifacts/game.png`。测试期间不要操作实体手柄。限时包装器有独立的 30 秒看门狗和 5 秒结束宽限期；从应用菜单启动则可持续对局。

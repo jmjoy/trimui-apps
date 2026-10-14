@@ -1,45 +1,40 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
+set positional-arguments
 
 mod chinese_chess "crates/chinese-chess/justfile"
 mod gomoku "crates/gomoku/justfile"
 mod voxel_world "crates/voxel-world/justfile"
 
+scripts := justfile_directory() / "scripts"
+
 default: list
 
 list:
-    @just --list --list-submodules
+    @just --justfile "{{ justfile_directory() }}/justfile" --list --list-submodules
 
-fmt:
-    cargo fmt --manifest-path "{{ justfile_directory() }}/Cargo.toml" --all -- --check
+fmt project="all":
+    bash "{{ scripts }}/cargo.sh" fmt "$@"
 
-test:
-    cargo test --manifest-path "{{ justfile_directory() }}/Cargo.toml" --locked --workspace
+test project="all":
+    bash "{{ scripts }}/cargo.sh" test "$@"
 
-clippy:
-    cargo clippy --manifest-path "{{ justfile_directory() }}/Cargo.toml" --locked --workspace --all-targets -- -D warnings
+clippy project="all":
+    bash "{{ scripts }}/cargo.sh" clippy "$@"
 
-check: fmt test clippy
+check project="all": (fmt project) (test project) (clippy project)
 
-build project="chinese_chess" profile="release":
-    just {{ project }}::build "{{ profile }}"
+build project="all" profile="release":
+    bash "{{ scripts }}/cargo.sh" build "$@"
 
-package project="chinese_chess" profile="release":
-    just {{ project }}::package "{{ profile }}"
+[private]
+_stage project profile: (build project profile)
+    bash "{{ scripts }}/stage.sh" "$@"
 
-deploy project="chinese_chess" profile="release":
-    just {{ project }}::deploy "{{ profile }}"
+package project="all" profile="release": (_stage project profile)
+    bash "{{ scripts }}/package.sh" "$1"
 
-run project="chinese_chess" *args:
-    just {{ project }}::run {{ args }}
+deploy project="all" profile="release": (package project profile)
+    bash "{{ scripts }}/deploy.sh" "$1"
 
-input-test project="chinese_chess":
-    just {{ project }}::input-test
-
-bench project="voxel_world" seconds="40":
-    just {{ project }}::bench "{{ seconds }}"
-
-exit-test project="voxel_world":
-    just {{ project }}::exit-test
-
-clean project="chinese_chess":
-    just {{ project }}::clean
+clean project="all":
+    bash "{{ scripts }}/clean.sh" "$@"

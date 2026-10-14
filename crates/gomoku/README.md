@@ -35,7 +35,11 @@ just check
 just build gomoku
 just package gomoku
 just deploy gomoku
+# 另行部署并运行冒烟测试
+just gomoku::smoke-test
 ```
+
+根目录省略模块名时处理全部项目：`just package` 生成 `artifacts/trimui-apps-trimui-smart-pro.tar.gz`；`just deploy` 上传并安装该压缩包。部署仅安装，不启动应用；`just gomoku::smoke-test` 会先部署该模块，再运行冒烟测试。
 
 使用 `cargo zigbuild` 构建 `aarch64-unknown-linux-gnu.2.33`，默认缓存为 `~/.cache/cargo-zigbuild`，复用根目标 ALSA 库。运行时使用固件 Vulkan 和 ALSA/dmix。
 
@@ -60,10 +64,10 @@ just gomoku::check
 cargo test --locked -p trimui-gomoku gpu_board_smoke -- --ignored
 
 # 限时运行并取回截图
-just run gomoku -- --seconds 15 --capture /tmp/gomoku.png
+just gomoku::run -- --seconds 15 --capture /tmp/gomoku.png
 
 # 自动构建、安装、限时冒烟测试，再注入手柄事件
-just input-test gomoku
+just gomoku::input-test
 ```
 
 输入测试直接向现有 `/dev/input/event3` 注入事件；测试期间不要操作实体手柄。覆盖执黑及执白开局、AI 回应、提示、悔棋、重开、静音、音效 / 音乐开关及音量、组合键退出，保存 `artifacts/gomoku/input-test.log`、`setup.png` 和 `game.png`，并对截图中的木质棋盘、五个定位点和黑白棋子做像素检查。

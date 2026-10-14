@@ -102,8 +102,8 @@
 
 ### Task 1：打包、CPU 核心、调试信息、性能基准 ✅
 
-- **打包脚本**：justfile 用 heredoc 生成 `launch.sh` 和 `test.sh`，不再依赖不存在的 `scripts/` 目录。
-- **justfile 配方**：`install`、`deploy`、`bench`、`input-test`、`exit-test`、`sounds`、`atlas`；根 justfile 增加了 `bench` 和 `exit-test` 入口。
+- **打包脚本**：`launch.sh` 和 `test.sh` 维护在项目 `scripts/` 中，公共主机脚本负责构建、暂存、打包及 ADB 安装。
+- **justfile 配方**：`install`、`deploy`、`smoke-test`、`bench`、`input-test`、`exit-test`、`sounds`、`atlas`；运行和实机测试通过模块调用，根 justfile 只提供通用开发命令。
 - **CPU 核心**：`src/system.rs` 中的 `CpuManager` 负责开启和恢复核心，每 5 秒检查一次，核心被系统关闭时最多重试 3 次，之后降级运行。`Telemetry` 负责采集频率、调频策略、温度和内存。
 - **线程池**：`src/jobs.rs` 是带优先级的线程池；活动线程数等于在线核数 − 1，运行中可调整。
 - **调试信息叠加层**：可在设置中开关，也可用命令行 `--debug-overlay` 打开。
@@ -409,7 +409,8 @@
 ```sh
 just voxel_world::check          # fmt + test + clippy
 just build voxel_world           # 交叉编译（glibc 2.33）
-just deploy voxel_world          # 部署 + 15 秒冒烟测试
+just deploy voxel_world          # 打包并通过 ADB 安装，不启动应用
+just voxel_world::smoke-test     # 部署 + 15 秒冒烟测试
 just voxel_world::input-test     # 输入注入测试（测试期间不要操作手柄）
 just voxel_world::exit-test      # 退出路径与 CPU/MainUI 恢复测试
 just voxel_world::bench 40       # 实机基准，结果追加到 bench-history.log

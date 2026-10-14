@@ -41,8 +41,12 @@ just check
 just build voxel_world
 just package voxel_world
 just deploy voxel_world
-just input-test voxel_world
+# 另行部署并运行冒烟测试
+just voxel_world::smoke-test
+just voxel_world::input-test
 ```
+
+根目录省略模块名时处理全部项目：`just package` 生成 `artifacts/trimui-apps-trimui-smart-pro.tar.gz`；`just deploy` 上传并安装该压缩包。部署仅安装，不启动应用；`just voxel_world::smoke-test` 会先部署该模块，再运行冒烟测试。
 
 - 安装目录：`/mnt/SDCARD/Ports/VoxelWorld`，marker 为 `.trimui-voxel-world`。
 - 安装包：`artifacts/voxel-world-trimui-smart-pro.tar.gz`，解压到 SD 卡根目录。
@@ -56,13 +60,13 @@ just input-test voxel_world
 ```sh
 just voxel_world::check
 cargo test --locked -p trimui-voxel-world gpu_scene_smoke -- --ignored
-just run voxel_world -- --seconds 15 --capture /tmp/voxel-world.png
-just input-test voxel_world
+just voxel_world::run -- --seconds 15 --capture /tmp/voxel-world.png
+just voxel_world::input-test
 ```
 
-CLI 支持 `--seconds N`（0 不限时）、`--probe`、`--capture PNG`、`--capture-after N`（默认 2 秒）、`--controller PATH`（默认 `/dev/input/js0`）、`--save-dir DIR`（默认 `save`）、`--seed U64`、帮助和版本。种子仅在没有既有存档时使用。时长必须有限且非负。`RUST_LOG` 默认 `warn,trimui_voxel_world=info`。截图读回和 PNG 编码会短暂降低帧率，`just run` 会将指定截图取回为 `artifacts/voxel-world/capture.png`。
+CLI 支持 `--seconds N`（0 不限时）、`--probe`、`--capture PNG`、`--capture-after N`（默认 2 秒）、`--controller PATH`（默认 `/dev/input/js0`）、`--save-dir DIR`（默认 `save`）、`--seed U64`、帮助和版本。种子仅在没有既有存档时使用。时长必须有限且非负。`RUST_LOG` 默认 `warn,trimui_voxel_world=info`。截图读回和 PNG 编码会短暂降低帧率，`just voxel_world::run` 会将指定截图取回为 `artifacts/voxel-world/capture.png`。
 
-部署冒烟和输入测试使用 `/tmp/` 中的独立存档，不会改动玩家存档。输入测试直接向现有 `/dev/input/event3` 写事件，持续注入轴值以避免固件采样覆盖测试输入；测试期间不要操作实体手柄；验证挖放、跳跃、飞行、双摇杆、快捷栏、方块库、设置、组合键退出和存档重载，并取回 `setup.png`、`game.png`、日志。
+冒烟和输入测试使用 `/tmp/` 中的独立存档，不会改动玩家存档。输入测试直接向现有 `/dev/input/event3` 写事件，持续注入轴值以避免固件采样覆盖测试输入；测试期间不要操作实体手柄；验证挖放、跳跃、飞行、双摇杆、快捷栏、方块库、设置、组合键退出和存档重载，并取回 `setup.png`、`game.png`、日志。
 
 限时测试保留独立的 30 秒看门狗与 5 秒结束宽限期；所有退出路径恢复 MainUI。主机检查明确结果行和关键日志，以兼容旧版 adbd 的退出码行为。
 
